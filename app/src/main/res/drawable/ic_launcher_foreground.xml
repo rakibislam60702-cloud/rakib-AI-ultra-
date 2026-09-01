@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 1. Four HUD Cybernetic Framing Brackets (Neon Cyan with Golden Accent) -->
+    <!-- Top-Left Bracket -->
+    <path
+        android:pathData="M25,33 L25,25 L33,25"
+        android:strokeWidth="2.2"
+        android:strokeColor="#00E5FF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M27,27 L31,27"
+        android:strokeWidth="1.2"
+        android:strokeColor="#FFD700" />
+
+    <!-- Top-Right Bracket -->
+    <path
+        android:pathData="M83,33 L83,25 L75,25"
+        android:strokeWidth="2.2"
+        android:strokeColor="#00E5FF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M81,27 L77,27"
+        android:strokeWidth="1.2"
+        android:strokeColor="#FFD700" />
+
+    <!-- Bottom-Left Bracket -->
+    <path
+        android:pathData="M25,75 L25,83 L33,83"
+        android:strokeWidth="2.2"
+        android:strokeColor="#00E5FF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M27,81 L31,81"
+        android:strokeWidth="1.2"
+        android:strokeColor="#FFD700" />
+
+    <!-- Bottom-Right Bracket -->
+    <path
+        android:pathData="M83,75 L83,83 L75,83"
+        android:strokeWidth="2.2"
+        android:strokeColor="#00E5FF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M81,81 L77,81"
+        android:strokeWidth="1.2"
+        android:strokeColor="#FFD700" />
+
+    <!-- 2. Precision Laser Crosshair Ticks along Cardinal Axes -->
+    <path
+        android:pathData="M54,16 L54,26 M54,82 L54,92 M16,54 L26,54 M82,54 L92,54"
+        android:strokeWidth="2.4"
+        android:strokeColor="#00E5FF"
+        android:strokeLineCap="round" />
+
+    <path
+        android:pathData="M54,20 L54,24 M54,84 L54,88 M20,54 L24,54 M84,54 L88,54"
+        android:strokeWidth="1.4"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+
+    <!-- Diagonal AI Trajectory Guidance Vectors -->
+    <path
+        android:pathData="M29,29 L36,36 M79,29 L72,36 M29,79 L36,72 M79,79 L72,72"
+        android:strokeWidth="1.6"
+        android:strokeColor="#FFD700"
+        android:strokeLineCap="round" />
+
+    <!-- 3. Glowing Golden-Cyan Cyber Crosshair Ring (Outer Halo) -->
+    <path
+        android:pathData="M54,27 A27,27 0 1,0 54,81 A27,27 0 1,0 54,27 Z"
+        android:strokeWidth="1.6"
+        android:strokeColor="#00E5FF"
+        android:fillColor="#0D00E5FF" />
+
+    <!-- Golden Precision Target Compass Arc Notches -->
+    <path
+        android:pathData="M54,25 A29,29 0 0,1 74,33 M83,54 A29,29 0 0,1 74,75 M54,83 A29,29 0 0,1 34,75 M25,54 A29,29 0 0,1 34,33"
+        android:strokeWidth="1.8"
+        android:strokeColor="#FFD700"
+        android:strokeLineCap="round" />
+
+    <!-- 4. Concentric Cybernetic Alignment Ring -->
+    <path
+        android:pathData="M54,32 A22,22 0 1,0 54,76 A22,22 0 1,0 54,32 Z"
+        android:strokeWidth="1.2"
+        android:strokeColor="#5500E5FF" />
+
+    <!-- 5. Carrom Ultra Striker / Queen Disc Body -->
+    <!-- Gold Metallic Striker Outer Bezel -->
+    <path
+        android:pathData="M54,36 A18,18 0 1,0 54,72 A18,18 0 1,0 54,36 Z"
+        android:fillColor="#FFD700" />
+
+    <!-- Neon Cyan Internal Energy Rim -->
+    <path
+        android:pathData="M54,38 A16,16 0 1,0 54,70 A16,16 0 1,0 54,38 Z"
+        android:fillColor="#00E5FF" />
+
+    <!-- Deep Titanium/Ruby Center Chamber -->
+    <path
+        android:pathData="M54,40.5 A13.5,13.5 0 1,0 54,67.5 A13.5,13.5 0 1,0 54,40.5 Z"
+        android:fillColor="#09101E" />
+
+    <path
+        android:pathData="M54,43 A11,11 0 1,0 54,65 A11,11 0 1,0 54,43 Z"
+        android:fillColor="#B71C1C" />
+
+    <path
+        android:pathData="M54,44.5 A9.5,9.5 0 1,0 54,63.5 A9.5,9.5 0 1,0 54,44.5 Z"
+        android:fillColor="#FF1744" />
+
+    <!-- 6. Golden 8-Point Cyber Mandala Star -->
+    <!-- Vertical Gold Diamond -->
+    <path
+        android:pathData="M54,46 L56.8,54 L54,62 L51.2,54 Z"
+        android:fillColor="#FFD700" />
+    <!-- Horizontal Gold Diamond -->
+    <path
+        android:pathData="M46,54 L54,56.8 L62,54 L54,51.2 Z"
+        android:fillColor="#FFD700" />
+
+    <!-- Diagonal White Laser Struts -->
+    <path
+        android:pathData="M48.5,48.5 L54,54 L59.5,59.5 M59.5,48.5 L54,54 L48.5,59.5"
+        android:strokeWidth="1.3"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+
+    <!-- 7. Center AI Glowing Core Pip (Neon Cyan & Pure White) -->
+    <path
+        android:pathData="M54,50.5 A3.5,3.5 0 1,0 54,57.5 A3.5,3.5 0 1,0 54,50.5 Z"
+        android:fillColor="#00E5FF" />
+    <path
+        android:pathData="M54,52 A2,2 0 1,0 54,56 A2,2 0 1,0 54,52 Z"
+        android:fillColor="#FFFFFF" />
+
+    <!-- 8. Precision Crosshair Aperture Center Notches -->
+    <path
+        android:pathData="M54,34 L54,38 M54,70 L54,74 M34,54 L38,54 M70,54 L74,54"
+        android:strokeWidth="1.6"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+
+</vector>

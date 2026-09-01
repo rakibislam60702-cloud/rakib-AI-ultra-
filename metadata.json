@@ -1,0 +1,6 @@
+{
+  "name": "Rakib AI ultra",
+  "description": "Rakib AI ultra - Precision Carrom AI Aim Assistant with Gemini 2.5 Flash Vision, 3-Cushion Bank Ray Physics, Anti-Ban Stealth Guard, RGB Chroma Shaders, and 120 FPS latency-free floating HUD.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

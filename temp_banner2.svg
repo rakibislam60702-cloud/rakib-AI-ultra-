@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
+  <defs>
+    <linearGradient id="bgGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#081A12"/>
+      <stop offset="40%" stop-color="#122A1E"/>
+      <stop offset="100%" stop-color="#040D08"/>
+    </linearGradient>
+    <radialGradient id="sunGlow" cx="65%" cy="25%" r="35%">
+      <stop offset="0%" stop-color="#FFEB3B" stop-opacity="0.7"/>
+      <stop offset="50%" stop-color="#81C784" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#81C784" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="laserGlow" cx="30%" cy="60%" r="40%">
+      <stop offset="0%" stop-color="#00E5FF" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#00E5FF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="800" height="400" fill="url(#bgGrad2)"/>
+  <circle cx="520" cy="100" r="240" fill="url(#sunGlow)"/>
+  <circle cx="240" cy="240" r="200" fill="url(#laserGlow)"/>
+
+  <!-- Grass & Trees Silhouettes -->
+  <path d="M0,280 Q200,260 400,275 T800,270 L800,400 L0,400 Z" fill="#1B432C"/>
+  <path d="M0,310 Q300,295 550,305 T800,300 L800,400 L0,400 Z" fill="#0E2818"/>
+
+  <!-- Tech Motorcycle Silhouette Left-Center -->
+  <!-- Wheels -->
+  <circle cx="260" cy="260" r="42" fill="#0A0F14" stroke="#00E5FF" stroke-width="3"/>
+  <circle cx="260" cy="260" r="24" fill="#132230" stroke="#FFD700" stroke-width="2"/>
+  <circle cx="450" cy="260" r="42" fill="#0A0F14" stroke="#00E5FF" stroke-width="3"/>
+  <circle cx="450" cy="260" r="24" fill="#132230" stroke="#FFD700" stroke-width="2"/>
+  
+  <!-- Motorcycle Frame & Tank -->
+  <path d="M260,260 L330,220 L370,180 L420,200 L450,260 L360,260 Z" fill="#101C2B" stroke="#00E676" stroke-width="2"/>
+  <path d="M340,180 Q370,165 410,185 L390,210 Z" fill="#D50000" stroke="#FFD700" stroke-width="1.5"/>
+  <!-- Handlebars & Windshield -->
+  <path d="M410,185 L425,145 L445,150" stroke="#00E5FF" stroke-width="3" fill="none"/>
+  
+  <!-- Standing Figure with Sunglasses Silhouette Beside Bike -->
+  <path d="M480,110 C480,95 492,85 505,85 C518,85 530,95 530,110 C530,125 518,135 505,135 C492,135 480,125 480,110 Z" fill="#D7A177"/>
+  <!-- Sunglasses -->
+  <rect x="492" y="105" width="12" height="6" rx="2" fill="#00E5FF"/>
+  <rect x="508" y="105" width="12" height="6" rx="2" fill="#00E5FF"/>
+  <line x1="504" y1="108" x2="508" y2="108" stroke="#00E5FF" stroke-width="2"/>
+  <!-- White Henley Shirt Body -->
+  <path d="M480,135 L530,135 L540,240 L520,240 L515,180 L495,180 L490,240 L470,240 Z" fill="#ECEFF1"/>
+  <!-- Jeans -->
+  <path d="M490,240 L520,240 L525,340 L507,340 L505,270 L503,270 L501,340 L483,340 Z" fill="#1E88E5"/>
+
+  <!-- AI Trajectory Lines from Carrom Striker to Pocket -->
+  <path d="M120,330 L350,150" stroke="#00E5FF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M350,150 L680,80" stroke="#FFD700" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="680" cy="80" r="18" fill="#00E676" fill-opacity="0.3" stroke="#00E676" stroke-width="2.5"/>
+  <line x1="680" y1="60" x2="680" y2="100" stroke="#00E676" stroke-width="2"/>
+  <line x1="660" y1="80" x2="700" y2="80" stroke="#00E676" stroke-width="2"/>
+
+  <!-- Bottom Badge -->
+  <rect x="250" y="325" width="300" height="38" rx="19" fill="#071911" stroke="#00E676" stroke-width="1.8"/>
+  <text x="400" y="349" fill="#00E676" font-family="sans-serif" font-size="14" font-weight="bold" text-anchor="middle" letter-spacing="2">AI TRAJECTORY MASTER</text>
+</svg>

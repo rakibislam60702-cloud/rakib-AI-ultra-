@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="400dp"
+    android:height="200dp"
+    android:viewportWidth="400"
+    android:viewportHeight="200">
+    
+    <!-- Cyber Deep Space Gradient -->
+    <path
+        android:pathData="M0,0h400v200h-400z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="400"
+                android:endY="200"
+                android:type="linear">
+                <item android:color="#FF080E18" android:offset="0.0" />
+                <item android:color="#FF102038" android:offset="0.5" />
+                <item android:color="#FF04070D" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Glowing Grid Pattern -->
+    <path
+        android:pathData="M0,40 L400,40 M0,80 L400,80 M0,120 L400,120 M0,160 L400,160 M80,0 L80,200 M160,0 L160,200 M240,0 L240,200 M320,0 L320,200"
+        android:strokeWidth="0.8"
+        android:strokeColor="#1800E5FF" />
+
+    <!-- Outer Frame & Corner Highlights -->
+    <path
+        android:pathData="M15,15 L385,15 L385,185 L15,185 Z"
+        android:strokeWidth="1.5"
+        android:strokeColor="#3000E5FF" />
+    <path
+        android:pathData="M10,10 L30,10 M10,10 L10,30 M390,10 L370,10 M390,10 L390,30 M10,190 L30,190 M10,190 L10,170 M390,190 L370,190 M390,190 L390,170"
+        android:strokeWidth="2.5"
+        android:strokeColor="#00E5FF" />
+
+    <!-- Corner Target Pocket Rings -->
+    <path
+        android:pathData="M355,45 A25,25 0 1,0 355,95 A25,25 0 1,0 355,45 Z"
+        android:fillColor="#0D2035"
+        android:strokeWidth="2"
+        android:strokeColor="#00E676" />
+    <path
+        android:pathData="M355,58 A12,12 0 1,0 355,82 A12,12 0 1,0 355,58 Z"
+        android:fillColor="#02050A" />
+
+    <!-- Striker Baseline -->
+    <path
+        android:pathData="M40,150 L360,150"
+        android:strokeWidth="1.5"
+        android:strokeColor="#40FFD700" />
+    <path
+        android:pathData="M50,150 A6,6 0 1,0 50,150.1 M350,150 A6,6 0 1,0 350,150.1"
+        android:strokeWidth="3"
+        android:strokeColor="#FFD700" />
+
+    <!-- Main Striker (Gold & Cyan Core) -->
+    <path
+        android:pathData="M85,120 A26,26 0 1,0 85,172 A26,26 0 1,0 85,120 Z"
+        android:fillColor="#FFD700" />
+    <path
+        android:pathData="M85,130 A16,16 0 1,0 85,162 A16,16 0 1,0 85,130 Z"
+        android:fillColor="#0D1B2A"
+        android:strokeWidth="2"
+        android:strokeColor="#00E5FF" />
+    <path
+        android:pathData="M85,138 A8,8 0 1,0 85,154 A8,8 0 1,0 85,138 Z"
+        android:fillColor="#00E5FF" />
+
+    <!-- Target Puck / Coin (White / Queen) -->
+    <path
+        android:pathData="M230,80 A18,18 0 1,0 230,116 A18,18 0 1,0 230,80 Z"
+        android:fillColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeColor="#FFD700" />
+    <path
+        android:pathData="M230,90 A8,8 0 1,0 230,106 A8,8 0 1,0 230,90 Z"
+        android:fillColor="#FF1744" />
+
+    <!-- AI Laser Aim Trajectory Guidance Lines -->
+    <!-- Direct Aim Line -->
+    <path
+        android:pathData="M85,146 L230,98"
+        android:strokeWidth="3.5"
+        android:strokeColor="#00E5FF"
+        android:strokeLineCap="round" />
+    
+    <!-- Reflection/Deflection Path to Pocket -->
+    <path
+        android:pathData="M230,98 L355,70"
+        android:strokeWidth="3.5"
+        android:strokeColor="#00E676"
+        android:strokeLineCap="round" />
+
+    <!-- Rebound / Trick Shot Wall Path -->
+    <path
+        android:pathData="M85,146 L190,15 L355,70"
+        android:strokeWidth="2"
+        android:strokeColor="#B3FFD700"
+        android:strokeLineCap="round" />
+
+    <!-- Target Pocket Lock Crosshair -->
+    <path
+        android:pathData="M355,60 L355,80 M345,70 L365,70"
+        android:strokeWidth="2.5"
+        android:strokeColor="#00E676"
+        android:strokeLineCap="round" />
+</vector>

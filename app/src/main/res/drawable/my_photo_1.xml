@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="400dp"
+    android:height="200dp"
+    android:viewportWidth="400"
+    android:viewportHeight="200">
+    
+    <!-- Deep Gradient Background -->
+    <path
+        android:pathData="M0,0h400v200h-400z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="400"
+                android:endY="200"
+                android:type="linear">
+                <item android:color="#FF0D1B2A" android:offset="0.0" />
+                <item android:color="#FF1B263B" android:offset="0.5" />
+                <item android:color="#FF070B14" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Glowing Cyber Grid -->
+    <path
+        android:pathData="M0,50 L400,50 M0,100 L400,100 M0,150 L400,150 M100,0 L100,200 M200,0 L200,200 M300,0 L300,200"
+        android:strokeWidth="1"
+        android:strokeColor="#1500E5FF" />
+
+    <!-- Carrom Board Pocket Circle with Glow -->
+    <path
+        android:pathData="M340,50 A35,35 0 1,0 340,120 A35,35 0 1,0 340,50 Z"
+        android:fillColor="#0D2035"
+        android:strokeWidth="2.5"
+        android:strokeColor="#00E5FF" />
+    <path
+        android:pathData="M340,65 A20,20 0 1,0 340,105 A20,20 0 1,0 340,65 Z"
+        android:fillColor="#040810" />
+
+    <!-- Striker at Bottom Left -->
+    <path
+        android:pathData="M70,110 A30,30 0 1,0 70,170 A30,30 0 1,0 70,110 Z"
+        android:fillColor="#FFD700" />
+    <path
+        android:pathData="M70,122 A18,18 0 1,0 70,158 A18,18 0 1,0 70,122 Z"
+        android:fillColor="#111A29"
+        android:strokeWidth="2"
+        android:strokeColor="#00E5FF" />
+    <path
+        android:pathData="M70,132 A8,8 0 1,0 70,148 A8,8 0 1,0 70,132 Z"
+        android:fillColor="#00E5FF" />
+
+    <!-- Coin / Puck (Queen in Red/Gold) in Middle -->
+    <path
+        android:pathData="M210,85 A20,20 0 1,0 210,125 A20,20 0 1,0 210,85 Z"
+        android:fillColor="#FF1744"
+        android:strokeWidth="2"
+        android:strokeColor="#FFD700" />
+    <path
+        android:pathData="M210,95 A10,10 0 1,0 210,115 A10,10 0 1,0 210,95 Z"
+        android:fillColor="#FFD700" />
+
+    <!-- AI Laser Aim Trajectory Lines -->
+    <!-- Striker to Coin Path (Cyan Glow) -->
+    <path
+        android:pathData="M70,140 L210,105"
+        android:strokeWidth="3.5"
+        android:strokeColor="#00E5FF"
+        android:strokeLineCap="round" />
+    
+    <!-- Coin to Pocket Rebound Path (Gold Glow) -->
+    <path
+        android:pathData="M210,105 L340,85"
+        android:strokeWidth="3.5"
+        android:strokeColor="#FFD700"
+        android:strokeLineCap="round" />
+
+    <!-- Secondary Bank Shot Aim Line -->
+    <path
+        android:pathData="M70,140 L180,25 L340,85"
+        android:strokeWidth="1.8"
+        android:strokeColor="#8000E5FF"
+        android:strokeLineCap="round" />
+
+    <!-- Trajectory Target Crosshair at Target Pocket -->
+    <path
+        android:pathData="M340,75 L340,95 M330,85 L350,85"
+        android:strokeWidth="2.5"
+        android:strokeColor="#00E676"
+        android:strokeLineCap="round" />
+
+    <!-- AI Angle Annotation Indicator -->
+    <path
+        android:pathData="M110,118 A25,25 0 0,0 125,134"
+        android:strokeWidth="1.5"
+        android:strokeColor="#00E5FF" />
+</vector>

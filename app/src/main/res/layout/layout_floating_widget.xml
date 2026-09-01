@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="vertical">
+
+    <!-- ছোট গোল ফ্লোটিং বাবল আইকন -->
+    <ImageView
+        android:id="@+id/floating_bubble_icon"
+        android:layout_width="54dp"
+        android:layout_height="54dp"
+        android:background="@drawable/bg_neon_bubble"
+        android:src="@drawable/ic_bubble_crosshair"
+        android:padding="9dp"
+        android:elevation="12dp"
+        android:contentDescription="Rakib Aim HUD" />
+
+    <!-- পরিচ্ছন্ন কন্ট্রোল প্যানেল -->
+    <LinearLayout
+        android:id="@+id/floating_menu_container"
+        android:layout_width="230dp"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_glassmorphic_popup"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:layout_marginTop="6dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="RAKIB AI ULTRA HUD"
+            android:textColor="#00E5FF"
+            android:textStyle="bold"
+            android:textSize="13sp" />
+
+        <!-- ম্যাচ টগল: শুধু ম্যাচেই দাগ দেখাবে -->
+        <Switch
+            android:id="@+id/switch_match_active"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Match Mode (Draw Lines)"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:layout_marginTop="6dp"/>
+
+        <!-- অটো প্লে টগল -->
+        <Switch
+            android:id="@+id/switch_auto_play"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Auto Play Strike"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"/>
+
+        <!-- সেন্টার টার্গেট গাইড (লাকি শট) -->
+        <Switch
+            android:id="@+id/switch_center_target"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Lucky Shot Bullseye"
+            android:textColor="#FFD700"
+            android:textSize="12sp"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Line Thickness"
+            android:textColor="#AAAAAA"
+            android:textSize="11sp"
+            android:layout_marginTop="6dp"/>
+
+        <SeekBar
+            android:id="@+id/seekbar_thickness"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="15"
+            android:progress="4"/>
+
+        <!-- কালার অপশন -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginTop="6dp">
+
+            <Button
+                android:id="@+id/btn_color_cyan"
+                android:layout_width="36dp"
+                android:layout_height="32dp"
+                android:backgroundTint="#00E5FF"
+                android:layout_marginEnd="4dp"/>
+
+            <Button
+                android:id="@+id/btn_color_gold"
+                android:layout_width="36dp"
+                android:layout_height="32dp"
+                android:backgroundTint="#FFD700"
+                android:layout_marginEnd="4dp"/>
+
+            <Button
+                android:id="@+id/btn_color_red"
+                android:layout_width="36dp"
+                android:layout_height="32dp"
+                android:backgroundTint="#FF1744"
+                android:layout_marginEnd="4dp"/>
+
+            <Button
+                android:id="@+id/btn_color_green"
+                android:layout_width="36dp"
+                android:layout_height="32dp"
+                android:backgroundTint="#00E676"/>
+        </LinearLayout>
+
+        <!-- পজ বাটন (অ্যাপ বন্ধ না করে শুধু ট্র্যাকিং পজ রাখা) -->
+        <Button
+            android:id="@+id/btn_pause_tracking"
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:layout_marginTop="8dp"
+            android:text="PAUSE TRACKING"
+            android:textSize="11sp"
+            android:backgroundTint="#263238"
+            android:textColor="#FFFFFF"/>
+    </LinearLayout>
+</LinearLayout>
