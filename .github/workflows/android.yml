@@ -21,8 +21,10 @@ jobs:
 
     - name: Configure Keystore
       run: |
+        # প্রোজেক্ট রুট ফোল্ডার এবং অ্যান্ড্রয়েড ফোল্ডার উভয় স্থানেই কি-স্টোর তৈরি
+        keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
         mkdir -p ~/.android
-        keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+        cp debug.keystore ~/.android/debug.keystore
 
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
@@ -31,13 +33,10 @@ jobs:
 
     - name: Run Build
       run: |
-        # Configuration Cache এবং Daemon বন্ধ করে ক্লিন বিল্ড
-        gradle assembleDebug --no-configuration-cache --no-daemon --warning-mode none
+        gradle assembleDebug --no-configuration-cache --no-daemon
 
     - name: Upload APK Artifact
-      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: Rakib-AI-ultra-APK
         path: app/build/outputs/apk/debug/*.apk
-        
