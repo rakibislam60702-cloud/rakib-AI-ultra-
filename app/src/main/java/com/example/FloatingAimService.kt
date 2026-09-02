@@ -9,7 +9,10 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.provider.Settings
 import android.view.*
 import android.widget.*
 import androidx.core.app.NotificationCompat
@@ -22,6 +25,22 @@ class FloatingAimService : Service() {
     private var floatingView: View? = null
     private var aimOverlayView: AimOverlayView? = null
     private var isPaused = false
+
+    private val idleHandler = Handler(Looper.getMainLooper())
+    private val idleFadeRunnable = Runnable {
+        val menu = floatingView?.findViewById<LinearLayout>(R.id.floating_menu_container)
+        if (menu == null || menu.visibility != View.VISIBLE) {
+            floatingView?.animate()?.alpha(0.30f)?.setDuration(400)?.start()
+        }
+    }
+
+    private fun resetIdleFade(menuVisible: Boolean = false) {
+        idleHandler.removeCallbacks(idleFadeRunnable)
+        floatingView?.animate()?.alpha(1.0f)?.setDuration(150)?.start()
+        if (!menuVisible) {
+            idleHandler.postDelayed(idleFadeRunnable, 3000L)
+        }
+    }
 
     companion object {
         private const val NOTIFICATION_CHANNEL_ID = "rakib_aim_hud_channel"
@@ -40,6 +59,7 @@ class FloatingAimService : Service() {
 
         setupAimOverlayCanvas()
         setupFloatingHUDWidget()
+        resetIdleFade(false)
     }
 
     private fun startForegroundNotification() {
@@ -119,11 +139,40 @@ class FloatingAimService : Service() {
         val menuContainer = floatingView!!.findViewById<LinearLayout>(R.id.floating_menu_container)
         val switchMatch = floatingView!!.findViewById<Switch>(R.id.switch_match_active)
         val switchAutoPlay = floatingView!!.findViewById<Switch>(R.id.switch_auto_play)
+        val switchFastMode = floatingView!!.findViewById<Switch>(R.id.switch_fast_mode)
+        val btnTriggerStrike = floatingView!!.findViewById<Button>(R.id.btn_trigger_auto_strike)
         val switchCenter = floatingView!!.findViewById<Switch>(R.id.switch_center_target)
         val seekThickness = floatingView!!.findViewById<SeekBar>(R.id.seekbar_thickness)
         val btnPause = floatingView!!.findViewById<Button>(R.id.btn_pause_tracking)
 
-        // বাবল ড্র্যাগ এবং ট্যাপ হ্যান্ডলার
+        // বাবল ড্র্যাগ, সিঙ্গেল ট্যাপ (টগল গাইডলাইন), ডাবল ট্যাপ (মেইন HUD ডায়লগ) এবং ৩-সেকেন্ড আইডল ফেড
+        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                // Single Tap: Toggle trajectory guidelines visibility instantly (Show / Hide lines)
+                val currentlyVisible = (aimOverlayView?.visibility == View.VISIBLE)
+                val nextVisible = !currentlyVisible
+                aimOverlayView?.visibility = if (nextVisible && !isPaused) View.VISIBLE else View.GONE
+                if (nextVisible) {
+                    aimOverlayView?.wakeRenderingEngine()
+                    Toast.makeText(this@FloatingAimService, "🎯 Aim Lines: VISIBLE", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@FloatingAimService, "👁️ Aim Lines: HIDDEN", Toast.LENGTH_SHORT).show()
+                }
+                switchMatch.isChecked = nextVisible
+                resetIdleFade(menuContainer.visibility == View.VISIBLE)
+                return true
+            }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                // Double Tap: Open the main HUD settings dialog (switch between Auto-Play & pure Manual mode)
+                val isMenuOpen = menuContainer.visibility == View.VISIBLE
+                val willOpen = !isMenuOpen
+                menuContainer.visibility = if (willOpen) View.VISIBLE else View.GONE
+                resetIdleFade(willOpen)
+                return true
+            }
+        })
+
         bubbleIcon.setOnTouchListener(object : View.OnTouchListener {
             private var initialX = 0
             private var initialY = 0
@@ -132,6 +181,9 @@ class FloatingAimService : Service() {
             private var isDragging = false
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
+                resetIdleFade(menuContainer.visibility == View.VISIBLE)
+                gestureDetector.onTouchEvent(event)
+
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
                         initialX = hudParams.x
@@ -154,11 +206,8 @@ class FloatingAimService : Service() {
                         }
                         return true
                     }
-                    MotionEvent.ACTION_UP -> {
-                        if (!isDragging) {
-                            // বাবল ট্যাপে মেনু খোলা/বন্ধ
-                            menuContainer.visibility = if (menuContainer.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-                        }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        resetIdleFade(menuContainer.visibility == View.VISIBLE)
                         return true
                     }
                 }
@@ -166,18 +215,92 @@ class FloatingAimService : Service() {
             }
         })
 
+        // মেনু কন্টেইনারে যেকোনো ইন্টারঅ্যাকশনে আইডল টাইমার রিসেট হবে
+        menuContainer.setOnTouchListener { _, _ ->
+            resetIdleFade(true)
+            false
+        }
+
         // শুধু ম্যাচ শুরু হলেই দাগ স্ক্রিনে আসবে
         switchMatch.setOnCheckedChangeListener { _, isChecked ->
+            resetIdleFade(menuContainer.visibility == View.VISIBLE)
             aimOverlayView?.visibility = if (isChecked && !isPaused) View.VISIBLE else View.GONE
         }
 
-        switchAutoPlay.setOnCheckedChangeListener { _, isChecked ->
-            AimEngine.isAutoPlayActive = isChecked
-            aimOverlayView?.isAutoPlayActive = isChecked
-            aimOverlayView?.wakeRenderingEngine()
+        // Auto-Play Strike Switch with Accessibility Verification
+        switchAutoPlay.setOnCheckedChangeListener { buttonView, isChecked ->
+            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+            if (isChecked) {
+                if (!AutoStrikeAccessibilityService.isAccessibilitySettingsOn(this@FloatingAimService)) {
+                    buttonView.isChecked = false
+                    btnTriggerStrike?.visibility = View.GONE
+                    Toast.makeText(
+                        this@FloatingAimService,
+                        "⚠️ Please enable 'AutoStrike Service' in Accessibility Settings",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    try {
+                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                    return@setOnCheckedChangeListener
+                }
+
+                AimEngine.isAutoPlayActive = true
+                aimOverlayView?.isAutoPlayActive = true
+                aimOverlayView?.wakeRenderingEngine()
+                btnTriggerStrike?.visibility = View.VISIBLE
+                Toast.makeText(this@FloatingAimService, "⚡ Auto-Play Strike Active", Toast.LENGTH_SHORT).show()
+            } else {
+                AimEngine.isAutoPlayActive = false
+                aimOverlayView?.isAutoPlayActive = false
+                btnTriggerStrike?.visibility = View.GONE
+            }
+        }
+
+        switchFastMode?.setOnCheckedChangeListener { _, isChecked ->
+            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+            AimEngine.isFastModeActive = isChecked
+            aimOverlayView?.isFastMode = isChecked
+            val modeMsg = if (isChecked) "⚡ Fast Mode (80ms Strike): ON" else "Standard Strike Mode: ON"
+            Toast.makeText(this@FloatingAimService, modeMsg, Toast.LENGTH_SHORT).show()
+        }
+
+        // Instant Auto-Strike Manual Trigger Button
+        btnTriggerStrike?.setOnClickListener {
+            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+            if (!AutoStrikeAccessibilityService.isAccessibilitySettingsOn(this@FloatingAimService)) {
+                Toast.makeText(
+                    this@FloatingAimService,
+                    "⚠️ Please enable Accessibility Service in Settings",
+                    Toast.LENGTH_LONG
+                ).show()
+                try {
+                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+                return@setOnClickListener
+            }
+
+            aimOverlayView?.triggerAutoStrike { success ->
+                if (success) {
+                    Toast.makeText(this@FloatingAimService, "🎯 Strike Fired!", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@FloatingAimService, "Strike cancelled or service unavailable", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
 
         switchCenter.setOnCheckedChangeListener { _, isChecked ->
+            resetIdleFade(menuContainer.visibility == View.VISIBLE)
             AimEngine.isCenterBullseyeActive = isChecked
             aimOverlayView?.config = aimOverlayView?.config?.copy(isCenterTargetGuideEnabled = isChecked) ?: AimEngineConfig()
             aimOverlayView?.invalidate()
@@ -185,34 +308,42 @@ class FloatingAimService : Service() {
 
         seekThickness.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(p0: SeekBar?, p1: Int, p2: Boolean) {
-                AimEngine.laserThickness = (p1 + 2).toFloat()
-                aimOverlayView?.config = aimOverlayView?.config?.copy(strokeWidth = (p1 + 2).toFloat()) ?: AimEngineConfig()
-                aimOverlayView?.invalidate()
+                resetIdleFade(menuContainer.visibility == View.VISIBLE)
+                aimOverlayView?.setLaserThickness((p1 + 2).toFloat())
             }
-            override fun onStartTrackingTouch(p0: SeekBar?) {}
-            override fun onStopTrackingTouch(p0: SeekBar?) {}
+            override fun onStartTrackingTouch(p0: SeekBar?) {
+                resetIdleFade(true)
+            }
+            override fun onStopTrackingTouch(p0: SeekBar?) {
+                resetIdleFade(menuContainer.visibility == View.VISIBLE)
+            }
         })
 
-        // কালার সিলেকশন
+        // কালার সিলেকশন - Cyan (#00E5FF), Yellow (#FFD600), Red (#FF1744), Neon Green (#00E676)
         floatingView!!.findViewById<Button>(R.id.btn_color_cyan).setOnClickListener {
-            AimEngine.lineColor = Color.parseColor("#00E5FF")
-            aimOverlayView?.invalidate()
+            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+            aimOverlayView?.setLaserColor(Color.parseColor("#00E5FF"))
+            Toast.makeText(this@FloatingAimService, "🎨 Laser Color: Cyan (#00E5FF)", Toast.LENGTH_SHORT).show()
         }
         floatingView!!.findViewById<Button>(R.id.btn_color_gold).setOnClickListener {
-            AimEngine.lineColor = Color.parseColor("#FFD700")
-            aimOverlayView?.invalidate()
+            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+            aimOverlayView?.setLaserColor(Color.parseColor("#FFD600"))
+            Toast.makeText(this@FloatingAimService, "🎨 Laser Color: Yellow (#FFD600)", Toast.LENGTH_SHORT).show()
         }
         floatingView!!.findViewById<Button>(R.id.btn_color_red).setOnClickListener {
-            AimEngine.lineColor = Color.parseColor("#FF1744")
-            aimOverlayView?.invalidate()
+            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+            aimOverlayView?.setLaserColor(Color.parseColor("#FF1744"))
+            Toast.makeText(this@FloatingAimService, "🎨 Laser Color: Red (#FF1744)", Toast.LENGTH_SHORT).show()
         }
         floatingView!!.findViewById<Button>(R.id.btn_color_green).setOnClickListener {
-            AimEngine.lineColor = Color.parseColor("#00E676")
-            aimOverlayView?.invalidate()
+            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+            aimOverlayView?.setLaserColor(Color.parseColor("#00E676"))
+            Toast.makeText(this@FloatingAimService, "🎨 Laser Color: Neon Green (#00E676)", Toast.LENGTH_SHORT).show()
         }
 
         // পজ বাটন - স্ক্রিন বন্ধ হবে না, শুধু ট্র্যাকিং পজ থাকবে
         btnPause.setOnClickListener {
+            resetIdleFade(menuContainer.visibility == View.VISIBLE)
             isPaused = !isPaused
             if (isPaused) {
                 aimOverlayView?.visibility = View.GONE

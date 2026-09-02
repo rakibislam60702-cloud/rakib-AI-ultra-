@@ -50,8 +50,32 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Auto Play Strike"
-            android:textColor="#FFFFFF"
+            android:textColor="#00E5FF"
             android:textSize="12sp"/>
+
+        <!-- ফাস্ট মোড অটো-স্ট্রাইক টগল (80ms ইনস্ট্যান্ট ডিসপ্যাচ) -->
+        <Switch
+            android:id="@+id/switch_fast_mode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="⚡ Fast Mode (80ms Strike)"
+            android:textColor="#FF9100"
+            android:checked="true"
+            android:textSize="12sp"/>
+
+        <!-- ইনস্ট্যান্ট অটো স্ট্রাইক বাটন -->
+        <Button
+            android:id="@+id/btn_trigger_auto_strike"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:text="⚡ FIRE AUTO-STRIKE"
+            android:textSize="10sp"
+            android:textColor="#060B13"
+            android:textStyle="bold"
+            android:backgroundTint="#FFD700"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="4dp"
+            android:visibility="gone"/>
 
         <!-- সেন্টার টার্গেট গাইড (লাকি শট) -->
         <Switch
@@ -96,7 +120,7 @@
                 android:id="@+id/btn_color_gold"
                 android:layout_width="36dp"
                 android:layout_height="32dp"
-                android:backgroundTint="#FFD700"
+                android:backgroundTint="#FFD600"
                 android:layout_marginEnd="4dp"/>
 
             <Button

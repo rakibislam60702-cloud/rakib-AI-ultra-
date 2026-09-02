@@ -1,12 +1,15 @@
 package com.example
 
+import android.accessibilityservice.AccessibilityService
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.TextUtils
 import android.widget.Toast
 import java.util.Locale
 import android.graphics.Bitmap
@@ -14,6 +17,7 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import android.Manifest
 import android.content.pm.PackageManager
+import kotlinx.coroutines.*
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -33,7 +37,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -90,6 +97,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -101,6 +111,23 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.hypot
 
+fun isAccessibilityServiceEnabled(context: Context, serviceClass: Class<out AccessibilityService>): Boolean {
+    val expectedComponentName = ComponentName(context, serviceClass)
+    val enabledServicesSetting = Settings.Secure.getString(
+        context.contentResolver,
+        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+    ) ?: return false
+    val colonSplitter = TextUtils.SimpleStringSplitter(':')
+    colonSplitter.setString(enabledServicesSetting)
+    while (colonSplitter.hasNext()) {
+        val componentNameString = colonSplitter.next()
+        val enabledComponent = ComponentName.unflattenFromString(componentNameString)
+        if (enabledComponent != null && enabledComponent == expectedComponentName) {
+            return true
+        }
+    }
+    return false
+}
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -156,15 +183,16 @@ fun MainAppScaffold() {
 
     var currentTab by remember { mutableStateOf(NavigationTab.DASHBOARD) }
 
-    var isVipActive by remember { mutableStateOf(sharedPref.getBoolean("is_vip", false)) }
+    var isPasscodeActive by remember { mutableStateOf(false) }
     var remainingMillis by remember { mutableLongStateOf(0L) }
     var cloudLicenseInfo by remember { mutableStateOf<CloudLicenseStatus?>(null) }
     var isCheckingLicenseOnline by remember { mutableStateOf(false) }
 
-    var showVipDialog by remember { mutableStateOf(false) }
+    var showPasscodeDialog by remember { mutableStateOf(false) }
     var showPermissionDialog by remember { mutableStateOf(false) }
-    var vipInputText by remember { mutableStateOf("") }
-    var isActivatingVip by remember { mutableStateOf(false) }
+    var showAccessibilityPromptDialog by remember { mutableStateOf(false) }
+    var passcodeInputText by remember { mutableStateOf("") }
+    var isActivatingPasscode by remember { mutableStateOf(false) }
 
     // Notification Permission Launcher for Android 13+ (POST_NOTIFICATIONS)
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -207,26 +235,78 @@ fun MainAppScaffold() {
     val isFloatingServiceActive by FloatingAimService.isServiceRunning.collectAsStateWithLifecycle()
     val cloudAiState by CloudAiConnectionManager.connectionState.collectAsStateWithLifecycle()
 
-    // Auto-Connect to Cloud Server & Online License Verification on Launch
+    // Auto-Connect to Cloud Server & Hardware-Bound 7-Day License Check on Launch
     LaunchedEffect(Unit) {
         CloudAiConnectionManager.initializeAutoConnect(context)
         isCheckingLicenseOnline = true
         val status = LicenseVerificationService.verifyLicenseOnline(context)
         cloudLicenseInfo = status
-        isVipActive = status.isVip
-        remainingMillis = status.remainingTrialMillis
+        isPasscodeActive = status.isPasscodeActive
+        remainingMillis = status.remainingMillis
         isCheckingLicenseOnline = false
 
         while (true) {
             delay(1000)
-            if (remainingMillis > 0 && !isVipActive) {
+            if (remainingMillis > 0) {
                 remainingMillis = (remainingMillis - 1000).coerceAtLeast(0L)
+                if (remainingMillis <= 0L) {
+                    isPasscodeActive = false
+                }
             }
         }
     }
 
-    val isTrialActive = remainingMillis > 0
-    val isAppUnlocked = isVipActive || isTrialActive
+    val isAppUnlocked = isPasscodeActive && remainingMillis > 0
+
+    val launchCarromAndForegroundService = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
+        // 1. Start Floating Service
+        val intent = Intent(context, FloatingAimService::class.java)
+        ContextCompat.startForegroundService(context, intent)
+
+        // 2. Direct launch Carrom Disc Pool
+        val packageName = "com.miniclip.carrom"
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(packageName)
+        if (launchIntent != null) {
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(launchIntent)
+            Toast.makeText(context, "🎯 Carrom Disc Pool Launched!", Toast.LENGTH_SHORT).show()
+        } else {
+            context.startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://play.google.com/store/apps/details?id=$packageName")
+                ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            )
+        }
+
+        // 3. Smoothly minimize to background so overlay is on top
+        (context as? Activity)?.moveTaskToBack(true)
+    }
+
+    val handleStartEngine = {
+        if (!isAppUnlocked) {
+            Toast.makeText(context, "🔒 App Locked. Enter Passcode to activate 7 days.", Toast.LENGTH_SHORT).show()
+            passcodeInputText = ""
+            showPasscodeDialog = true
+        } else if (isFloatingServiceActive) {
+            val intent = Intent(context, FloatingAimService::class.java)
+            context.stopService(intent)
+            Toast.makeText(context, "🛑 Floating Aim Engine Stopped", Toast.LENGTH_SHORT).show()
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+            showPermissionDialog = true
+        } else if (!isAccessibilityServiceEnabled(context, AutoStrikeAccessibilityService::class.java) &&
+            !isAccessibilityServiceEnabled(context, CarromAutoPlayService::class.java)) {
+            showAccessibilityPromptDialog = true
+        } else {
+            launchCarromAndForegroundService()
+        }
+    }
 
     val statusBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -248,7 +328,6 @@ fun MainAppScaffold() {
         ) {
             when (currentTab) {
                 NavigationTab.DASHBOARD -> DashboardScreen(
-                    isVipActive = isVipActive,
                     isAppUnlocked = isAppUnlocked,
                     remainingMillis = remainingMillis,
                     cloudLicenseInfo = cloudLicenseInfo,
@@ -256,9 +335,9 @@ fun MainAppScaffold() {
                     isFloatingServiceActive = isFloatingServiceActive,
                     aiAnalysisResult = aiAnalysisResult,
                     isAnalyzingWithGemini = isAnalyzingWithGemini,
-                    onOpenVipDialog = {
-                        vipInputText = ""
-                        showVipDialog = true
+                    onOpenPasscodeDialog = {
+                        passcodeInputText = ""
+                        showPasscodeDialog = true
                     },
                     onAnalyzeGemini = {
                         scope.launch {
@@ -271,72 +350,29 @@ fun MainAppScaffold() {
                             isAnalyzingWithGemini = false
                         }
                     },
-                    onToggleFloatingService = {
-                        if (!isAppUnlocked) {
-                            Toast.makeText(context, "Please unlock VIP or start trial", Toast.LENGTH_SHORT).show()
-                            return@DashboardScreen
-                        }
-
-                        if (isFloatingServiceActive) {
-                            val intent = Intent(context, FloatingAimService::class.java)
-                            context.stopService(intent)
-                            Toast.makeText(context, "Floating Engine Stopped", Toast.LENGTH_SHORT).show()
-                        } else {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
-                                showPermissionDialog = true
-                            } else {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                    }
-                                }
-
-                                // ১. ওভারলে সার্ভিস চালু
-                                val intent = Intent(context, FloatingAimService::class.java)
-                                ContextCompat.startForegroundService(context, intent)
-
-                                // ২. অ্যাপ ব্যাকগ্রাউন্ডে পাঠানো
-                                (context as? Activity)?.moveTaskToBack(true)
-
-                                // ৩. সরাসরি মূল গেম চালু করা
-                                val packageName = "com.miniclip.carrom"
-                                val launchIntent = context.packageManager.getLaunchIntentForPackage(packageName)
-                                if (launchIntent != null) {
-                                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    context.startActivity(launchIntent)
-                                    Toast.makeText(context, "🎯 Launching Carrom Disc Pool with AI Aim HUD!", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    context.startActivity(
-                                        Intent(
-                                            Intent.ACTION_VIEW,
-                                            Uri.parse("https://play.google.com/store/apps/details?id=$packageName")
-                                        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                                    )
-                                }
-                            }
-                        }
-                    },
+                    onToggleFloatingService = { handleStartEngine() },
                     simColor = selectedLaserColor,
                     simStrokeWidth = laserStrokeThickness,
                     simDualBank = isDualBankEnabled
                 )
 
                 NavigationTab.STORE -> StoreScreen(
-                    isVipActive = isVipActive,
-                    onOpenVipDialog = {
-                        vipInputText = ""
-                        showVipDialog = true
+                    isAppUnlocked = isAppUnlocked,
+                    remainingMillis = remainingMillis,
+                    onOpenPasscodeDialog = {
+                        passcodeInputText = ""
+                        showPasscodeDialog = true
                     }
                 )
 
                 NavigationTab.PROFILE -> ProfileScreen(
-                    isVipActive = isVipActive,
+                    isAppUnlocked = isAppUnlocked,
                     remainingMillis = remainingMillis,
                     cloudLicenseInfo = cloudLicenseInfo,
                     cloudAiState = cloudAiState,
-                    onOpenVipDialog = {
-                        vipInputText = ""
-                        showVipDialog = true
+                    onOpenPasscodeDialog = {
+                        passcodeInputText = ""
+                        showPasscodeDialog = true
                     }
                 )
 
@@ -413,22 +449,62 @@ fun MainAppScaffold() {
             )
         }
 
-        // VIP & Hardware Trial Expired Dialog
-        if (showVipDialog) {
+        // Accessibility Service Prompt Dialog
+        if (showAccessibilityPromptDialog) {
+            AlertDialog(
+                onDismissRequest = { showAccessibilityPromptDialog = false },
+                title = { Text("AutoStrike Accessibility", color = Color.White, fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        text = "Enable 'AutoStrikeAccessibilityService' in Accessibility Settings for automatic screen touches, coin alignment, and auto-play execution.\n\nYou can also launch directly without auto-strike gestures.",
+                        fontSize = 13.sp,
+                        color = Color(0xFFC0D0E5)
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showAccessibilityPromptDialog = false
+                            try {
+                                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                            } catch (_: Exception) {
+                                launchCarromAndForegroundService()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E5FF))
+                    ) {
+                        Text("OPEN SETTINGS", color = Color(0xFF060B13), fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showAccessibilityPromptDialog = false
+                            launchCarromAndForegroundService()
+                        }
+                    ) {
+                        Text("LAUNCH DIRECTLY", color = Color(0xFF88A0C2))
+                    }
+                },
+                containerColor = Color(0xFF10192A)
+            )
+        }
+
+        // Secret Passcode Dialog (Anti-Reset Hardware Anchored)
+        if (showPasscodeDialog) {
             val hwid = cloudLicenseInfo?.hardwareId ?: LicenseVerificationService.getHardwareFingerprint(context)
             AlertDialog(
-                onDismissRequest = { showVipDialog = false },
+                onDismissRequest = { showPasscodeDialog = false },
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = if (isVipActive) "★ VIP LIFETIME UNLOCKED"
-                            else if (!isTrialActive) "🔒 TRIAL EXPIRED • ENTER VIP PASSKEY"
-                            else "★ VIP LIFETIME ACCESS",
-                            color = if (isVipActive) Color(0xFFFFD700)
-                            else if (!isTrialActive) Color(0xFFFF5252)
-                            else Color(0xFFFFD700),
+                            text = if (isAppUnlocked) "⚡ 7-DAY ACCESS ACTIVE" else "🔒 ENTER SECRET PASSCODE",
+                            color = if (isAppUnlocked) Color(0xFF00E676) else Color(0xFFFFD700),
                             fontWeight = FontWeight.ExtraBold,
-                            fontSize = 15.sp
+                            fontSize = 16.sp
                         )
                     }
                 },
@@ -439,8 +515,8 @@ fun MainAppScaffold() {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(if (!isTrialActive && !isVipActive) Color(0x2EFF1744) else Color(0x1F00E5FF))
-                                .border(1.dp, if (!isTrialActive && !isVipActive) Color(0x66FF1744) else Color(0x3300E5FF), RoundedCornerShape(8.dp))
+                                .background(if (!isAppUnlocked) Color(0x2EFF1744) else Color(0x1F00E5FF))
+                                .border(1.dp, if (!isAppUnlocked) Color(0x66FF1744) else Color(0x3300E5FF), RoundedCornerShape(8.dp))
                                 .padding(horizontal = 10.dp, vertical = 6.dp)
                         ) {
                             Column {
@@ -452,7 +528,7 @@ fun MainAppScaffold() {
                                     Text(
                                         text = "🛡️ HWID: $hwid",
                                         fontSize = 10.5.sp,
-                                        color = if (!isTrialActive && !isVipActive) Color(0xFFFF8A80) else Color(0xFF00E5FF),
+                                        color = if (!isAppUnlocked) Color(0xFFFF8A80) else Color(0xFF00E5FF),
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
@@ -463,20 +539,20 @@ fun MainAppScaffold() {
                                     )
                                 }
                                 Text(
-                                    text = "Android Keystore Hardware Anchored • 7-Day Limit",
+                                    text = "Android Keystore Hardware Bound • 7-Day Limit (168 Hours)",
                                     fontSize = 9.sp,
                                     color = Color(0xFF88A0C2)
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         Text(
-                            text = when {
-                                isVipActive -> "👑 Lifetime VIP Status is active on this hardware device. You can verify or change your passkey below:"
-                                !isTrialActive -> "⚠️ Your 7-Day Free Trial (604,800,000 ms) has EXPIRED for this hardware. Data clear or reinstallation cannot reset this hardware lock. Please enter your VIP Passkey to unlock permanent access:"
-                                else -> "Enter your VIP Passkey to upgrade from 7-Day Trial to Lifetime VIP access permanently bound to this hardware:"
+                            text = if (isAppUnlocked) {
+                                "7-Day trial is currently active (${formatCountdown(remainingMillis)} remaining). You can re-activate or enter a new passcode below:"
+                            } else {
+                                "This engine is hardware-locked. Enter your 7-Day secret passcode to activate full aim assistance on this device:"
                             },
                             fontSize = 12.sp,
                             color = Color(0xFFC0D0E5),
@@ -484,11 +560,16 @@ fun MainAppScaffold() {
                         )
 
                         OutlinedTextField(
-                            value = vipInputText,
-                            onValueChange = { vipInputText = it },
-                            placeholder = { Text("e.g. RAKIB-VIP-2026", color = Color(0x66FFFFFF), fontSize = 12.5.sp) },
-                            label = { Text("VIP Passkey") },
+                            value = passcodeInputText,
+                            onValueChange = { passcodeInputText = it },
+                            placeholder = { Text("••••••••", color = Color(0x66FFFFFF), fontSize = 14.sp) },
+                            label = { Text("Master Passcode") },
                             singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Password,
+                                autoCorrect = false
+                            ),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Color(0xFF00E5FF),
                                 unfocusedBorderColor = Color(0x6600E5FF),
@@ -499,66 +580,40 @@ fun MainAppScaffold() {
                             ),
                             modifier = Modifier.fillMaxWidth()
                         )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Quick Test Keys
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Quick Keys:",
-                                fontSize = 10.sp,
-                                color = Color(0xFF88A0C2)
-                            )
-                            Row {
-                                listOf("RAKIB-VIP-2026", "Rakib@48").forEach { testKey ->
-                                    Text(
-                                        text = testKey,
-                                        fontSize = 10.sp,
-                                        color = Color(0xFF00E5FF),
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(Color(0x1F00E5FF))
-                                            .clickable { vipInputText = testKey }
-                                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                }
-                            }
-                        }
                     }
                 },
                 confirmButton = {
                     Button(
                         onClick = {
                             scope.launch {
-                                isActivatingVip = true
-                                val res = LicenseVerificationService.activateVipKeyOnline(context, vipInputText)
+                                isActivatingPasscode = true
+                                val res = LicenseVerificationService.activatePasscode(context, passcodeInputText)
                                 res.onSuccess { status ->
-                                    isVipActive = true
+                                    isPasscodeActive = status.isPasscodeActive
                                     cloudLicenseInfo = status
-                                    remainingMillis = status.remainingTrialMillis
-                                    showVipDialog = false
-                                    Toast.makeText(context, "👑 LIFETIME VIP ACTIVE! Hardware Unlocked.", Toast.LENGTH_LONG).show()
+                                    remainingMillis = status.remainingMillis
+                                    showPasscodeDialog = false
+                                    Toast.makeText(context, "🎯 Access Granted: 7 Days (168 Hours) Activated!", Toast.LENGTH_LONG).show()
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                                        showPermissionDialog = true
+                                    } else {
+                                        launchCarromAndForegroundService()
+                                    }
                                 }.onFailure { error ->
-                                    Toast.makeText(context, error.message ?: "Invalid Key", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, error.message ?: "Access Denied", Toast.LENGTH_SHORT).show()
                                 }
-                                isActivatingVip = false
+                                isActivatingPasscode = false
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isVipActive) Color(0xFF00E5FF) else Color(0xFFFFD700)
+                            containerColor = Color(0xFFFFD700)
                         )
                     ) {
-                        if (isActivatingVip) {
+                        if (isActivatingPasscode) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color(0xFF060B13))
                         } else {
                             Text(
-                                text = if (isVipActive) "VERIFY PASSKEY" else "UNLOCK VIP ACCESS",
+                                text = "ACTIVATE 7 DAYS",
                                 color = Color(0xFF060B13),
                                 fontWeight = FontWeight.Bold
                             )
@@ -566,7 +621,7 @@ fun MainAppScaffold() {
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showVipDialog = false }) {
+                    TextButton(onClick = { showPasscodeDialog = false }) {
                         Text("Cancel", color = Color(0xFF88A0C2))
                     }
                 },
@@ -642,7 +697,6 @@ fun SleekBottomNavBar(
  */
 @Composable
 fun DashboardScreen(
-    isVipActive: Boolean,
     isAppUnlocked: Boolean,
     remainingMillis: Long,
     cloudLicenseInfo: CloudLicenseStatus?,
@@ -650,7 +704,7 @@ fun DashboardScreen(
     isFloatingServiceActive: Boolean,
     aiAnalysisResult: AiAimDetectionResult?,
     isAnalyzingWithGemini: Boolean,
-    onOpenVipDialog: () -> Unit,
+    onOpenPasscodeDialog: () -> Unit,
     onAnalyzeGemini: () -> Unit,
     onToggleFloatingService: () -> Unit,
     simColor: Color,
@@ -718,13 +772,22 @@ fun DashboardScreen(
     val pagerState = rememberPagerState(pageCount = { bannerItems.size })
     val coroutineScope = rememberCoroutineScope()
 
-    // Smooth auto-scroll loop across all slides (3-second infinite auto-swipe)
-    LaunchedEffect(pagerState.pageCount) {
-        while (true) {
-            delay(3000)
-            if (!pagerState.isScrollInProgress) {
-                val next = (pagerState.currentPage + 1) % pagerState.pageCount
-                pagerState.animateScrollToPage(next)
+    // True continuous infinite auto-slider loop running on Dispatchers.Main
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.Main.immediate) {
+            while (isActive) {
+                delay(3000L)
+                if (bannerItems.isNotEmpty() && !pagerState.isScrollInProgress) {
+                    val nextPage = (pagerState.currentPage + 1) % bannerItems.size
+                    try {
+                        pagerState.animateScrollToPage(
+                            page = nextPage,
+                            animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing)
+                        )
+                    } catch (_: Exception) {
+                        // Handled smoothly if interrupted by user touch
+                    }
+                }
             }
         }
     }
@@ -760,26 +823,26 @@ fun DashboardScreen(
                 )
             }
 
-            // VIP Lifetime Button
+            // Passcode / 7-Day Access Button
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(20.dp))
                     .background(
-                        if (isVipActive) Brush.horizontalGradient(listOf(Color(0x4DFFD700), Color(0x33FFB300)))
-                        else Brush.horizontalGradient(listOf(Color(0x3300E5FF), Color(0x2200B0FF)))
+                        if (isAppUnlocked) Brush.horizontalGradient(listOf(Color(0x4D00E676), Color(0x3300C853)))
+                        else Brush.horizontalGradient(listOf(Color(0x33FFD700), Color(0x22FFA000)))
                     )
                     .border(
                         1.5.dp,
-                        if (isVipActive) Color(0xFFFFD700) else Color(0xFF00E5FF),
+                        if (isAppUnlocked) Color(0xFF00E676) else Color(0xFFFFD700),
                         RoundedCornerShape(20.dp)
                     )
-                    .clickable { onOpenVipDialog() }
+                    .clickable { onOpenPasscodeDialog() }
                     .padding(horizontal = 14.dp, vertical = 7.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = if (isVipActive) "★ LIFETIME VIP ACTIVE" else "★ VIP LIFETIME",
-                        color = if (isVipActive) Color(0xFFFFD700) else Color(0xFF00E5FF),
+                        text = if (isAppUnlocked) "⚡ 7 DAYS ACTIVE" else "🔒 ENTER PASSCODE",
+                        color = if (isAppUnlocked) Color(0xFF00E676) else Color(0xFFFFD700),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -869,14 +932,12 @@ fun DashboardScreen(
 
                 Text(
                     text = when {
-                        isVipActive -> "👑 VIP Lifetime Active • Permanent Hardware Key Bound"
-                        isAppUnlocked -> "🎁 7-Day Auto-Trial Active (Hardware Keystore Anchored)"
-                        else -> "⚠️ 7-Day Free Trial Expired for this Device (Anti-Reset Active)"
+                        isAppUnlocked -> "⚡ 7-Day Access Active (Hardware Keystore Anchored)"
+                        else -> "⚠️ 7-Day Session Expired for this Device (Passcode Required)"
                     },
                     fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = when {
-                        isVipActive -> Color(0xFFFFD700)
                         isAppUnlocked -> Color(0xFF00E676)
                         else -> Color(0xFFFF5252)
                     }
@@ -904,7 +965,7 @@ fun DashboardScreen(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "${cloudAiState.statusText} • ${if (isVipActive) "LIFETIME VIP" else "TRIAL"}",
+                    text = "${cloudAiState.statusText} • ${if (isAppUnlocked) "7-DAY ACTIVE" else "LOCKED"}",
                     fontSize = 10.sp,
                     color = Color(0xFF90CAF9),
                     fontWeight = FontWeight.SemiBold
@@ -1039,7 +1100,7 @@ fun DashboardScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable {
-                    if (!isAppUnlocked) onOpenVipDialog()
+                    if (!isAppUnlocked) onOpenPasscodeDialog()
                 },
             borderColor = if (!isAppUnlocked) Color(0xFFFF1744) else Color(0x3300E5FF)
         ) {
@@ -1056,20 +1117,17 @@ fun DashboardScreen(
             ) {
                 Column {
                     Text(
-                        text = if (isVipActive) "CLOUD VIP STATUS"
-                        else if (!isAppUnlocked) "HARDWARE TRIAL STATUS"
-                        else "7-DAY TRIAL COUNTDOWN",
+                        text = if (!isAppUnlocked) "HARDWARE ACCESS STATUS"
+                        else "7-DAY ACCESS COUNTDOWN",
                         fontSize = 11.sp,
                         color = if (!isAppUnlocked) Color(0xFFFF8A80) else Color(0xFF88A0C2),
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = if (isVipActive) "LIFETIME UNLOCKED"
-                        else if (!isAppUnlocked) "EXPIRED (HW-LOCKED)"
+                        text = if (!isAppUnlocked) "LOCKED (ENTER PASSCODE)"
                         else formatCountdown(remainingMillis),
                         fontSize = 16.sp,
-                        color = if (isVipActive) Color(0xFFFFD700)
-                        else if (!isAppUnlocked) Color(0xFFFF5252)
+                        color = if (!isAppUnlocked) Color(0xFFFF5252)
                         else Color.White,
                         fontWeight = FontWeight.Bold
                     )
@@ -1084,8 +1142,7 @@ fun DashboardScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (isVipActive) "VIP ACTIVE"
-                        else if (isAppUnlocked) "TRIAL ACTIVE"
+                        text = if (isAppUnlocked) "ACTIVE ⚡"
                         else "LOCKED 🔒",
                         color = if (isAppUnlocked) Color(0xFF00E676) else Color(0xFFFF1744),
                         fontSize = 11.sp,
@@ -1118,8 +1175,8 @@ fun DashboardScreen(
 
         fun executeStartEngine() {
             if (!isAppUnlocked) {
-                Toast.makeText(context, "🔒 Trial Expired. Please enter VIP Passkey to unlock.", Toast.LENGTH_SHORT).show()
-                onOpenVipDialog()
+                Toast.makeText(context, "🔒 Locked. Enter Master Passcode to unlock 7-Day access.", Toast.LENGTH_SHORT).show()
+                onOpenPasscodeDialog()
                 return
             }
 
@@ -1253,7 +1310,7 @@ fun DashboardScreen(
                         Text(
                             text = if (isStartingEngineSync) syncStatusText
                             else if (isFloatingServiceActive) "HUD Active • Carrom Disc Pool Synced 🟢"
-                            else if (!isAppUnlocked) "Trial Expired • Enter VIP Passkey to Launch"
+                            else if (!isAppUnlocked) "Engine Locked • Enter Master Passcode to Launch"
                             else "1-Tap Cloud Neural Sync & Instant Game Launch",
                             fontSize = 11.sp,
                             color = if (isFloatingServiceActive) Color(0xFF00E676)
@@ -1403,7 +1460,7 @@ fun DashboardScreen(
                                 )
                             } else if (!isAppUnlocked) {
                                 Text(
-                                    text = "🔒 TRIAL EXPIRED • ENTER VIP PASSKEY",
+                                    text = "🔒 LOCKED • ENTER MASTER PASSCODE",
                                     fontWeight = FontWeight.Black,
                                     fontSize = 13.5.sp,
                                     color = Color(0xFFFFD700),
@@ -1865,8 +1922,9 @@ fun DashboardScreen(
  */
 @Composable
 fun StoreScreen(
-    isVipActive: Boolean,
-    onOpenVipDialog: () -> Unit
+    isAppUnlocked: Boolean,
+    remainingMillis: Long,
+    onOpenPasscodeDialog: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -1885,17 +1943,17 @@ fun StoreScreen(
             letterSpacing = 1.5.sp
         )
         Text(
-            text = "Unlock Ultra Trajectory Engine & VIP Pass",
+            text = "Unlock Ultra Trajectory Engine & 7-Day Access",
             fontSize = 11.sp,
             color = Color(0xFF88A0C2)
         )
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Lifetime VIP Card
+        // 7-Day Pro Access Card
         GlassCard(
             modifier = Modifier.fillMaxWidth(),
-            borderColor = Color(0xFFFFD700)
+            borderColor = if (isAppUnlocked) Color(0xFF00E676) else Color(0xFFFFD700)
         ) {
             Column(
                 modifier = Modifier
@@ -1914,13 +1972,13 @@ fun StoreScreen(
                 ) {
                     Column {
                         Text(
-                            text = "👑 LIFETIME VIP PASS",
+                            text = "⚡ 7-DAY PRO ACCESS",
                             fontSize = 17.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = Color(0xFFFFD700)
                         )
                         Text(
-                            text = "Permanent Zero-Expiration Access",
+                            text = "Hardware-Locked 168-Hour Access",
                             fontSize = 11.sp,
                             color = Color(0xFFE0E0E0)
                         )
@@ -1929,11 +1987,11 @@ fun StoreScreen(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0xFFFFD700))
+                            .background(if (isAppUnlocked) Color(0xFF00E676) else Color(0xFFFFD700))
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = if (isVipActive) "ACTIVE ✅" else "POPULAR 🔥",
+                            text = if (isAppUnlocked) "ACTIVE ✅" else "LOCKED 🔒",
                             color = Color(0xFF060B13),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
@@ -1944,11 +2002,11 @@ fun StoreScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 listOf(
-                    "✔ Permanent Lifetime VIP License",
-                    "✔ Unlimited Gemini 2.5 Flash Vision AI Scans",
+                    "✔ 7-Day Unlimited Aim Trajectory Lines",
+                    "✔ Gemini 2.5 Flash Vision AI Scans",
                     "✔ Multi-Bank Cushion Rebound Trajectories",
                     "✔ Auto-Lock Target Pocket Predictor",
-                    "✔ Zero Ads & Dedicated Cloud Latency Routing"
+                    "✔ Sub-Pixel 120 FPS Real-time Physics Engine"
                 ).forEach { feature ->
                     Text(
                         text = feature,
@@ -1961,13 +2019,15 @@ fun StoreScreen(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 Button(
-                    onClick = onOpenVipDialog,
+                    onClick = onOpenPasscodeDialog,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFD700))
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isAppUnlocked) Color(0xFF00E676) else Color(0xFFFFD700)
+                    )
                 ) {
                     Text(
-                        text = if (isVipActive) "LIFETIME VIP ACTIVATED 👑" else "ENTER VIP PASSKEY",
+                        text = if (isAppUnlocked) "7-DAY ACCESS ACTIVE (${formatCountdown(remainingMillis)})" else "ENTER MASTER PASSCODE",
                         color = Color(0xFF060B13),
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp
@@ -2026,11 +2086,11 @@ fun StoreScreen(
  */
 @Composable
 fun ProfileScreen(
-    isVipActive: Boolean,
+    isAppUnlocked: Boolean,
     remainingMillis: Long,
     cloudLicenseInfo: CloudLicenseStatus?,
     cloudAiState: CloudAiConnectionState,
-    onOpenVipDialog: () -> Unit
+    onOpenPasscodeDialog: () -> Unit
 ) {
     val context = LocalContext.current
     val manufacturer = remember {
@@ -2068,7 +2128,7 @@ fun ProfileScreen(
                         colors = listOf(Color(0xFF00E5FF), Color(0xFF0D47A1))
                     )
                 )
-                .border(2.5.dp, if (isVipActive) Color(0xFFFFD700) else Color(0xFF00E5FF), CircleShape),
+                .border(2.5.dp, if (isAppUnlocked) Color(0xFF00E676) else Color(0xFFFFD700), CircleShape),
             contentAlignment = Alignment.Center
         ) {
             if (profileBitmap != null) {
@@ -2118,13 +2178,13 @@ fun ProfileScreen(
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(20.dp))
-                .background(if (isVipActive) Color(0x33FFD700) else Color(0x2200E5FF))
-                .border(1.dp, if (isVipActive) Color(0xFFFFD700) else Color(0xFF00E5FF), RoundedCornerShape(20.dp))
+                .background(if (isAppUnlocked) Color(0x3300E676) else Color(0x22FF1744))
+                .border(1.dp, if (isAppUnlocked) Color(0xFF00E676) else Color(0xFFFF1744), RoundedCornerShape(20.dp))
                 .padding(horizontal = 14.dp, vertical = 4.dp)
         ) {
             Text(
-                text = if (isVipActive) "★ LIFETIME VIP SUBSCRIBER" else "⚡ 7-DAY FREE TRIAL ACTIVE",
-                color = if (isVipActive) Color(0xFFFFD700) else Color(0xFF00E5FF),
+                text = if (isAppUnlocked) "⚡ 7-DAY ACCESS ACTIVE" else "🔒 ACCESS LOCKED",
+                color = if (isAppUnlocked) Color(0xFF00E676) else Color(0xFFFF5252),
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -2144,9 +2204,9 @@ fun ProfileScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                ProfileInfoRow("License Tier", if (isVipActive) "Lifetime VIP Pass" else "7-Day Automatic Trial")
-                ProfileInfoRow("Status", if (isVipActive) "Active (No Expiration)" else if (remainingMillis > 0) "Active (Trial Running)" else "Expired (Hardware Locked)")
-                ProfileInfoRow("Remaining Time", if (isVipActive) "Lifetime" else formatCountdown(remainingMillis))
+                ProfileInfoRow("License Tier", "7-Day Hardware-Bound Session")
+                ProfileInfoRow("Status", if (isAppUnlocked) "Active (168-Hour Session)" else "Locked (Passcode Required)")
+                ProfileInfoRow("Remaining Time", if (isAppUnlocked) formatCountdown(remainingMillis) else "Expired / Locked")
                 ProfileInfoRow("Hardware ID", cloudLicenseInfo?.hardwareId ?: LicenseVerificationService.getHardwareFingerprint(context))
                 ProfileInfoRow("Anti-Reset Protection", "Active (Hardware Keystore Anchored)")
                 ProfileInfoRow("Cloud AI Server", "${cloudAiState.latencyMs}ms • ${cloudAiState.handshakeProtocol}")
@@ -2156,16 +2216,16 @@ fun ProfileScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Button(
-                    onClick = onOpenVipDialog,
+                    onClick = onOpenPasscodeDialog,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isVipActive) Color(0xFF1B2A3F) else Color(0xFFFFD700)
+                        containerColor = if (isAppUnlocked) Color(0xFF1B2A3F) else Color(0xFFFFD700)
                     )
                 ) {
                     Text(
-                        text = if (isVipActive) "VERIFY VIP STATUS" else "ENTER VIP PASSKEY",
-                        color = if (isVipActive) Color(0xFF00E5FF) else Color(0xFF060B13),
+                        text = if (isAppUnlocked) "VERIFY PASSCODE STATUS" else "ENTER MASTER PASSCODE",
+                        color = if (isAppUnlocked) Color(0xFF00E5FF) else Color(0xFF060B13),
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp
                     )

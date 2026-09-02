@@ -25,17 +25,13 @@ import javax.crypto.spec.GCMParameterSpec
 
 data class CloudLicenseStatus(
     val isVerifiedOnline: Boolean,
-    val isVip: Boolean,
-    val isTrialActive: Boolean,
-    val isTrialExpired: Boolean,
-    val licenseKey: String,
-    val licenseId: String,
+    val isPasscodeActive: Boolean,
+    val isExpired: Boolean,
     val hardwareId: String,
-    val tierName: String,
-    val remainingTrialMillis: Long,
+    val remainingMillis: Long,
     val serverPingMs: Long,
     val cloudTimestampStr: String,
-    val firstInstallDateStr: String,
+    val activationDateStr: String,
     val isHardwareLocked: Boolean,
     val message: String
 )
@@ -43,41 +39,31 @@ data class CloudLicenseStatus(
 object LicenseVerificationService {
 
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(6, TimeUnit.SECONDS)
-        .readTimeout(6, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
         .build()
 
     private const val ANDROID_KEYSTORE_PROVIDER = "AndroidKeyStore"
-    private const val KEYSTORE_ALIAS = "Rakib_Hardware_Security_Root_Key"
-    private const val PREFS_NAME = "RakibAimHardwarePrefs_v2"
-    private const val KEY_VIP = "is_vip_lifetime"
-    private const val KEY_VIP_TOKEN = "vip_token_string"
-    private const val KEY_ENCRYPTED_TRIAL_ANCHOR = "encrypted_hw_trial_anchor"
-    private const val KEY_GCM_IV = "gcm_hw_iv"
-    private const val KEY_LAST_CLOCK_CHECK = "last_known_clock_check"
-    private const val KEY_TAMPER_LOCKED = "anti_reset_tamper_locked"
+    private const val KEYSTORE_ALIAS = "Rakib_Hardware_Passcode_Root_Key"
+    private const val PREFS_NAME = "RakibAimHardwarePrefs_v3"
 
-    // 7 Days in Milliseconds: 7 * 24 * 60 * 60 * 1000 = 604,800,000 ms
-    const val TRIAL_DURATION_MILLIS = 7L * 24L * 60L * 60L * 1000L
+    private const val KEY_ENCRYPTED_ACTIVATION = "encrypted_hw_activation_anchor"
+    private const val KEY_GCM_IV = "gcm_hw_iv_v3"
+    private const val KEY_LAST_CLOCK_CHECK = "last_known_clock_check_v3"
+    private const val KEY_IS_ACTIVATED = "is_passcode_activated"
 
-    // Valid VIP Keys
-    val VALID_VIP_KEYS = setOf(
-        "RAKIB-VIP-2026",
-        "RAKIB@48",
-        "Rakib@48",
-        "RAKIB999",
-        "VIP-2026-LIFETIME",
-        "PRO-AIM-ELITE",
-        "DISCPOOL-MASTER",
-        "RAKIB-VIP-PASS"
-    )
+    // Exact 7 Days in Milliseconds (168 Hours): 7 * 24 * 60 * 60 * 1000 = 604,800,000 ms
+    const val DURATION_7_DAYS_MILLIS = 7L * 24L * 60L * 60L * 1000L
+
+    // Master Secret Passcode
+    private const val MASTER_PASSCODE = "Rakib@48"
 
     /**
-     * Generates a deterministic Hardware Fingerprint combining ANDROID_ID and Build properties.
+     * Generates a deterministic Hardware Fingerprint combining Settings.Secure.ANDROID_ID and device properties.
      */
     fun getHardwareFingerprint(context: Context): String {
         val androidId = try {
-            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "UNKNOWN_ID"
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "UNKNOWN_DEVICE"
         } catch (_: Exception) {
             "FALLBACK_DEVICE_ID"
         }
@@ -102,12 +88,12 @@ object LicenseVerificationService {
             val hex = digest.joinToString("") { "%02X".format(it) }
             "HWID-${hex.substring(0, 4)}-${hex.substring(4, 8)}-${hex.substring(8, 12)}"
         } catch (_: Exception) {
-            "HWID-${(rawHardwareData.hashCode() and 0xFFFF).toString(16).uppercase().padStart(4, '0')}-2026"
+            "HWID-${(rawHardwareData.hashCode() and 0xFFFF).toString(16).uppercase().padStart(4, '0')}-DEV"
         }
     }
 
     /**
-     * Initializes or retrieves the Android Keystore Master Key.
+     * Initializes or retrieves the Android Keystore Secret Key for hardware-tied encryption.
      */
     private fun getOrCreateKeystoreSecretKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE_PROVIDER).apply { load(null) }
@@ -132,39 +118,39 @@ object LicenseVerificationService {
     }
 
     /**
-     * Encrypts and saves the hardware-tied initial install timestamp into Android Keystore-backed storage.
+     * Encrypts and saves the hardware-anchored activation timestamp into Keystore-backed storage.
      */
-    private fun secureSaveHardwareAnchor(context: Context, timestamp: Long, hwid: String) {
+    private fun secureSaveActivationAnchor(context: Context, timestamp: Long, hwid: String) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         try {
             val secretKey = getOrCreateKeystoreSecretKey()
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, secretKey)
             val iv = cipher.iv
-            val payload = "$timestamp|$hwid".toByteArray(StandardCharsets.UTF_8)
+            val payload = "$timestamp|$hwid|ACTIVATED".toByteArray(StandardCharsets.UTF_8)
             val encryptedBytes = cipher.doFinal(payload)
 
             prefs.edit()
-                .putString(KEY_ENCRYPTED_TRIAL_ANCHOR, Base64.encodeToString(encryptedBytes, Base64.NO_WRAP))
+                .putString(KEY_ENCRYPTED_ACTIVATION, Base64.encodeToString(encryptedBytes, Base64.NO_WRAP))
                 .putString(KEY_GCM_IV, Base64.encodeToString(iv, Base64.NO_WRAP))
                 .putLong(KEY_LAST_CLOCK_CHECK, timestamp)
+                .putBoolean(KEY_IS_ACTIVATED, true)
                 .apply()
         } catch (_: Exception) {
-            // Fallback plaintext anchor in private storage if Keystore throws on certain emulators
             prefs.edit()
-                .putString(KEY_ENCRYPTED_TRIAL_ANCHOR, "FALLBACK_$timestamp")
+                .putString(KEY_ENCRYPTED_ACTIVATION, "FALLBACK_$timestamp|$hwid")
                 .putLong(KEY_LAST_CLOCK_CHECK, timestamp)
+                .putBoolean(KEY_IS_ACTIVATED, true)
                 .apply()
         }
     }
 
     /**
-     * Decrypts the hardware anchor from Android Keystore.
-     * Prevents reset on app data clear or re-installation by verifying against Keystore creation anchor.
+     * Retrieves and decrypts the activation timestamp. Returns null if never activated on this hardware.
      */
-    private fun getHardwareAnchorTimestamp(context: Context, hwid: String): Long {
+    private fun getActivationTimestamp(context: Context, hwid: String): Long? {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val encryptedStr = prefs.getString(KEY_ENCRYPTED_TRIAL_ANCHOR, null)
+        val encryptedStr = prefs.getString(KEY_ENCRYPTED_ACTIVATION, null)
         val ivStr = prefs.getString(KEY_GCM_IV, null)
 
         if (!encryptedStr.isNullOrEmpty() && !ivStr.isNullOrEmpty()) {
@@ -185,50 +171,39 @@ object LicenseVerificationService {
                     }
                 }
             } catch (_: Exception) {
-                // Keystore decryption attempt fallback
+                // Ignore decryption failure
             }
         }
 
-        // Check if Android Keystore key already exists (which persists across data clear)
-        try {
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE_PROVIDER).apply { load(null) }
-            if (keyStore.containsAlias(KEYSTORE_ALIAS)) {
-                val creationDate = keyStore.getCreationDate(KEYSTORE_ALIAS)
-                if (creationDate != null) {
-                    val creationTime = creationDate.time
-                    secureSaveHardwareAnchor(context, creationTime, hwid)
-                    return creationTime
-                }
+        // Check fallback plaintext if keystore threw error
+        if (encryptedStr != null && encryptedStr.startsWith("FALLBACK_")) {
+            val content = encryptedStr.removePrefix("FALLBACK_")
+            val parts = content.split("|")
+            val time = parts.firstOrNull()?.toLongOrNull()
+            val savedHwid = parts.getOrNull(1)
+            if (time != null && savedHwid == hwid) {
+                return time
             }
-        } catch (_: Exception) {
-            // Ignore keystore load errors
         }
 
-        // First initial activation on new hardware
-        val now = System.currentTimeMillis()
-        secureSaveHardwareAnchor(context, now, hwid)
-        return now
+        return null
     }
 
     /**
-     * Verifies license, hardware fingerprint, and 7-day trial validity.
-     * Prevents anti-tamper clock rollback and hardware reset.
+     * Verifies the hardware-anchored 7-day access status.
+     * By default, returns locked if the secret passcode was never activated.
      */
     suspend fun verifyLicenseOnline(context: Context): CloudLicenseStatus = withContext(Dispatchers.IO) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val hwid = getHardwareFingerprint(context)
-        val isVipLocal = prefs.getBoolean(KEY_VIP, false)
-        val savedToken = prefs.getString(KEY_VIP_TOKEN, "") ?: ""
-        var isTamperLocked = prefs.getBoolean(KEY_TAMPER_LOCKED, false)
+        val activationTime = getActivationTimestamp(context, hwid)
+        val lastClockCheck = prefs.getLong(KEY_LAST_CLOCK_CHECK, activationTime ?: 0L)
 
-        val firstInstallTimestamp = getHardwareAnchorTimestamp(context, hwid)
-        val lastClockCheck = prefs.getLong(KEY_LAST_CLOCK_CHECK, firstInstallTimestamp)
-
-        var pingMs = 32L
+        var pingMs = 28L
         var isOnlineOk = false
         var currentServerTime = System.currentTimeMillis()
 
-        // Fetch verified NTP / Cloud Server timestamp to prevent local device clock manipulation
+        // Sync with verified NTP date header to prevent local clock manipulation
         val startTime = SystemClock.elapsedRealtime()
         try {
             val request = Request.Builder()
@@ -248,79 +223,80 @@ object LicenseVerificationService {
             }
             response.close()
         } catch (_: Exception) {
-            pingMs = 45L
+            pingMs = 38L
             isOnlineOk = true
         }
 
-        // Anti-Tamper Clock Rollback Check
+        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        val dateStr = sdf.format(Date(currentServerTime))
+
+        if (activationTime == null || activationTime <= 0L) {
+            // Fresh install or never activated: 100% Locked
+            return@withContext CloudLicenseStatus(
+                isVerifiedOnline = isOnlineOk,
+                isPasscodeActive = false,
+                isExpired = false,
+                hardwareId = hwid,
+                remainingMillis = 0L,
+                serverPingMs = pingMs,
+                cloudTimestampStr = dateStr,
+                activationDateStr = "Not Activated",
+                isHardwareLocked = true,
+                message = "Device Locked. Enter Passcode to activate 7-Day Access."
+            )
+        }
+
+        // Anti-tamper rollback check
         if (currentServerTime < lastClockCheck - (5 * 60 * 1000L)) {
-            // Clock was rolled back by more than 5 minutes
-            isTamperLocked = true
-            prefs.edit().putBoolean(KEY_TAMPER_LOCKED, true).apply()
+            // Clock was rolled back: Lock immediately
+            return@withContext CloudLicenseStatus(
+                isVerifiedOnline = isOnlineOk,
+                isPasscodeActive = false,
+                isExpired = true,
+                hardwareId = hwid,
+                remainingMillis = 0L,
+                serverPingMs = pingMs,
+                cloudTimestampStr = dateStr,
+                activationDateStr = sdf.format(Date(activationTime)),
+                isHardwareLocked = true,
+                message = "System Clock Rollback Detected. Re-enter Passcode to verify."
+            )
         } else {
             prefs.edit().putLong(KEY_LAST_CLOCK_CHECK, currentServerTime).apply()
         }
 
-        val elapsedTrialTime = (currentServerTime - firstInstallTimestamp).coerceAtLeast(0L)
-        val remainingTrial = if (isTamperLocked) {
-            0L
-        } else {
-            (TRIAL_DURATION_MILLIS - elapsedTrialTime).coerceAtLeast(0L)
-        }
-
-        val isTrialActive = remainingTrial > 0L
-        val isTrialExpired = !isTrialActive
-
-        val isVipValid = isVipLocal || VALID_VIP_KEYS.contains(savedToken.trim().uppercase(Locale.US))
-        val tier = if (isVipValid) "LIFETIME VIP ULTRA" else if (isTrialActive) "7-DAY PRO TRIAL" else "TRIAL EXPIRED"
-        val licenseId = if (isVipValid) "RKB-VIP-${(savedToken.hashCode() and 0xFFFF).toString().padStart(5, '0')}"
-        else "RKB-HW-${(hwid.hashCode() and 0xFFFF).toString().padStart(5, '0')}"
-
-        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-        val dateStr = sdf.format(Date(currentServerTime))
-        val installDateStr = sdf.format(Date(firstInstallTimestamp))
+        val elapsed = (currentServerTime - activationTime).coerceAtLeast(0L)
+        val remaining = (DURATION_7_DAYS_MILLIS - elapsed).coerceAtLeast(0L)
+        val isPasscodeActive = remaining > 0L
+        val isExpired = remaining <= 0L
 
         CloudLicenseStatus(
             isVerifiedOnline = isOnlineOk,
-            isVip = isVipValid,
-            isTrialActive = isTrialActive,
-            isTrialExpired = isTrialExpired,
-            licenseKey = savedToken,
-            licenseId = licenseId,
+            isPasscodeActive = isPasscodeActive,
+            isExpired = isExpired,
             hardwareId = hwid,
-            tierName = tier,
-            remainingTrialMillis = remainingTrial,
+            remainingMillis = remaining,
             serverPingMs = pingMs,
             cloudTimestampStr = dateStr,
-            firstInstallDateStr = installDateStr,
+            activationDateStr = sdf.format(Date(activationTime)),
             isHardwareLocked = true,
-            message = when {
-                isVipValid -> "VIP Lifetime Authorized by Cloud Hardware Keystore"
-                isTamperLocked -> "Anti-Reset Alert: System Clock Rollback Detected. VIP Passkey Required."
-                isTrialActive -> "Hardware-Locked 7-Day Free Trial Active"
-                else -> "Trial Expired (7 Days Finished). Enter VIP Passkey to unlock."
-            }
+            message = if (isPasscodeActive) "7-Day Passcode Active (Hardware Anchored)" else "7-Day Passcode Expired. Re-enter Passcode."
         )
     }
 
     /**
-     * Validates and activates a VIP passkey permanently bound to this hardware ID.
+     * Activates 7 days (168 hours) access tied to this device ID upon entering "Rakib@48".
      */
-    suspend fun activateVipKeyOnline(context: Context, key: String): Result<CloudLicenseStatus> = withContext(Dispatchers.IO) {
-        val trimmed = key.trim()
-        val matchedKey = VALID_VIP_KEYS.firstOrNull { it.equals(trimmed, ignoreCase = true) }
-        if (matchedKey != null) {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            prefs.edit()
-                .putBoolean(KEY_VIP, true)
-                .putString(KEY_VIP_TOKEN, matchedKey)
-                .putBoolean(KEY_TAMPER_LOCKED, false)
-                .apply()
-
+    suspend fun activatePasscode(context: Context, enteredCode: String): Result<CloudLicenseStatus> = withContext(Dispatchers.IO) {
+        val trimmed = enteredCode.trim()
+        if (trimmed == MASTER_PASSCODE) {
+            val hwid = getHardwareFingerprint(context)
+            val now = System.currentTimeMillis()
+            secureSaveActivationAnchor(context, now, hwid)
             val status = verifyLicenseOnline(context)
             Result.success(status)
         } else {
-            Result.failure(Exception("Invalid VIP Passkey. Please verify and try again."))
+            Result.failure(Exception("Access Denied: Invalid Passcode"))
         }
     }
 }
