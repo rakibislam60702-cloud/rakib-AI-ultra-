@@ -19,17 +19,18 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
-      with:
-        gradle-version: '8.10.2'
-
-    - name: Build Debug APK
+    - name: Configure Keystore
       run: |
         mkdir -p ~/.android
         keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-        
-        # সিস্টেম গ্রেডেল দিয়ে সরাসরি বিল্ড
+
+    - name: Setup Gradle and Build
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.4'
+
+    - name: Run Build
+      run: |
         gradle assembleDebug --no-daemon --stacktrace
 
     - name: Upload APK Artifact
