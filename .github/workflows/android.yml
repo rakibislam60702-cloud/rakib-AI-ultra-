@@ -19,36 +19,18 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Configure Keystore and Permissions
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.10.2'
+
+    - name: Build Debug APK
       run: |
         mkdir -p ~/.android
         keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-        chmod +x gradlew
-
-    - name: Auto-Detect Gradle and Build Debug APK
-      run: |
-        # প্রথমবার বিল্ড চালানো
-        set +e
-        BUILD_LOG=$(./gradlew assembleDebug --no-daemon 2>&1)
-        EXIT_CODE=$?
-        echo "$BUILD_LOG"
-
-        # যদি VersionCheckPlugin কোনো নির্দিষ্ট ভার্সন দাবি করে, তবে স্বয়ংক্রিয়ভাবে তা সেট করে পুনরায় বিল্ড নেওয়া
-        if [ $EXIT_CODE -ne 0 ]; then
-          REQUIRED_GRADLE=$(echo "$BUILD_LOG" | grep -o -E 'Minimum supported Gradle version is [0-9.]+' | head -n 1 | awk '{print $NF}')
-          
-          if [ -n "$REQUIRED_GRADLE" ]; then
-            echo "========================================================"
-            echo ">> Auto-Fix: Upgrading Gradle wrapper to required version: $REQUIRED_GRADLE"
-            echo "========================================================"
-            sed -i -E "s|distributionUrl=.*|distributionUrl=https\\\\://services.gradle.org/distributions/gradle-${REQUIRED_GRADLE}-bin.zip|" gradle/wrapper/gradle-wrapper.properties
-            
-            # সংশোধিত ভার্সন দিয়ে পুনরায় বিল্ড
-            ./gradlew assembleDebug --no-daemon --stacktrace
-            exit $?
-          fi
-          exit $EXIT_CODE
-        fi
+        
+        # সিস্টেম গ্রেডেল দিয়ে সরাসরি বিল্ড
+        gradle assembleDebug --no-daemon --stacktrace
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
