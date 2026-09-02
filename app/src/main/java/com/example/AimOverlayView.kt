@@ -15,6 +15,8 @@ import kotlin.math.*
  * 2. Strict Carrom board boundary clamping (trajectories never render outside wooden carrom frame or over player profiles).
  * 3. Clean 2D raycast reflections: Striker -> Target Puck -> Target Pocket.
  * 4. Solid laser guidelines with smooth alpha fading, zero cluttered badges.
+ * 5. High-performance rendering capped at 60 FPS via Choreographer with zero object allocation during draw cycles (no GC churn).
+ * 6. Thread-safe offloading of trajectory and physics vector calculations to Dispatchers.Default.
  */
 class AimOverlayView @JvmOverloads constructor(
     context: Context,
@@ -27,7 +29,7 @@ class AimOverlayView @JvmOverloads constructor(
             field = value
             updatePaints()
             requestAsyncTrajectoryCalculation()
-            invalidate()
+            postInvalidateOnAnimation()
         }
 
     val strikerPos = PointF(540f, 1500f)
@@ -37,6 +39,7 @@ class AimOverlayView @JvmOverloads constructor(
     private val strikerFilter = AntiJitterFilter(alpha = 0.38f, freezeThreshold = 1.4f)
     private val coinFilter = AntiJitterFilter(alpha = 0.38f, freezeThreshold = 1.4f)
 
+    @Volatile
     private var currentTrajectory: AimTrajectory? = null
     private var boardBounds: CarromBoardBounds = AimEngine.calculateBoardBounds(1080f, 2400f)
 
@@ -44,8 +47,10 @@ class AimOverlayView @JvmOverloads constructor(
     // 0 = none, 1 = striker baseline dragging, 2 = target puck dragging
     private var activeTouchTarget = 0
     private var isManualAimingActive = false
+    var isMatchModeActive: Boolean = false
+    var isLiveTrackingEngaged: Boolean = false
 
-    // Calculation Coroutine Scope
+    // Calculation Coroutine Scope on Dispatchers.Default
     private val calculationScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var calculationJob: Job? = null
     private var isCalculationPending = false
@@ -57,7 +62,11 @@ class AimOverlayView @JvmOverloads constructor(
     private var lastInteractionTimestamp = System.currentTimeMillis()
     private val IDLE_SLEEP_THRESHOLD_MS = 15000L
 
-    // Paints
+    // Frame-rate throttling at 60 FPS (16.6ms / frame)
+    private var lastFrameTimeNanos: Long = 0L
+    private val FRAME_INTERVAL_NANOS = 16_000_000L // ~60 FPS cap
+
+    // Cached Reusable Paints (Zero GC churn in onDraw)
     private val laserCorePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
@@ -130,11 +139,57 @@ class AimOverlayView @JvmOverloads constructor(
         color = Color.parseColor("#00E5FF")
     }
 
-    // 120 FPS Frame Callback
+    // Reticle & Post-Collision Cached Paints
+    private val strikerHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+
+    private val strikerBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2.5f
+    }
+
+    private val centerWhiteDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+    }
+
+    private val pocketRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#CC00E676")
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+    }
+
+    private val pocketFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#2600E676")
+        style = Paint.Style.FILL
+    }
+
+    private val deflectionDashedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        pathEffect = DashPathEffect(floatArrayOf(12f, 10f), 0f)
+    }
+
+    private val tangentGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#80FFAB00")
+        style = Paint.Style.STROKE
+        strokeWidth = 2.5f
+    }
+
+    // Cached Reusable RectF & Matrix instances
+    private val clipRect = RectF()
+    private val barBgRect = RectF()
+    private val barFillRect = RectF()
+    private val tempMatrix = Matrix()
+
+    // 60 FPS Throttled Choreographer Frame Callback
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!isEngineAsleep) {
-                invalidate()
+                if (frameTimeNanos - lastFrameTimeNanos >= FRAME_INTERVAL_NANOS) {
+                    lastFrameTimeNanos = frameTimeNanos
+                    invalidate()
+                }
                 Choreographer.getInstance().postFrameCallback(this)
             }
         }
@@ -186,24 +241,38 @@ class AimOverlayView @JvmOverloads constructor(
         pocketTargetPaint.apply {
             color = Color.parseColor("#00E676")
         }
+
+        strikerHaloPaint.apply {
+            color = (primaryColor and 0x00FFFFFF) or 0x33000000
+        }
+
+        strikerBorderPaint.apply {
+            color = primaryColor
+            strokeWidth = 2.5f
+        }
+
+        deflectionDashedPaint.apply {
+            color = (primaryColor and 0x00FFFFFF) or 0x80000000.toInt()
+            strokeWidth = config.strokeWidth * 0.65f
+        }
     }
 
     fun setLaserColor(color: Int) {
         AimEngine.lineColor = color
         config = config.copy(laserColor = color)
         updatePaints()
-        recalculateTrajectorySync()
+        requestAsyncTrajectoryCalculation()
         wakeRenderingEngine()
-        invalidate()
+        postInvalidateOnAnimation()
     }
 
     fun setLaserThickness(thickness: Float) {
         AimEngine.laserThickness = thickness
         config = config.copy(strokeWidth = thickness)
         updatePaints()
-        recalculateTrajectorySync()
+        requestAsyncTrajectoryCalculation()
         wakeRenderingEngine()
-        invalidate()
+        postInvalidateOnAnimation()
     }
 
     fun wakeRenderingEngine() {
@@ -211,7 +280,7 @@ class AimOverlayView @JvmOverloads constructor(
         if (isEngineAsleep) {
             isEngineAsleep = false
             Choreographer.getInstance().postFrameCallback(frameCallback)
-            recalculateTrajectorySync()
+            requestAsyncTrajectoryCalculation()
         }
     }
 
@@ -229,44 +298,100 @@ class AimOverlayView @JvmOverloads constructor(
             val initialCoinY = boardBounds.cushionTop + (boardBounds.boardSize * 0.32f)
             coinPos.set(initialCoinX, initialCoinY)
 
-            recalculateTrajectorySync()
+            requestAsyncTrajectoryCalculation()
         }
     }
 
     /**
-     * Zero-latency synchronous local CPU vector calculation at 60/120 FPS
-     * combined with background Cloud AI Physics Telemetry Sync during the 15-second turn window.
+     * Non-blocking asynchronous vector calculation offloaded to Dispatchers.Default.
+     * Prevents any UI micro-stutters or frame drops on the Android Main UI Thread.
      */
     fun recalculateTrajectorySync() {
-        if (width <= 0 || height <= 0) return
-        val currentStriker = PointF(strikerPos.x, strikerPos.y)
-        val currentCoin = PointF(coinPos.x, coinPos.y)
-
-        currentTrajectory = AimEngine.calculateTrajectory(
-            striker = currentStriker,
-            coin = currentCoin,
-            boardWidth = width.toFloat(),
-            boardHeight = height.toFloat(),
-            config = config
-        )
-
-        // Sync telemetry continuously with Cloud AI Physics server during turn
-        currentTrajectory?.let { traj ->
-            CloudPhysicsSyncClient.startTurnSyncWindow(
-                striker = currentStriker,
-                targetPuck = currentCoin,
-                pocket = traj.targetPocket,
-                pocketName = traj.pocketName,
-                boardBounds = boardBounds
-            )
-        }
-
-        isCalculationPending = false
-        invalidate()
+        requestAsyncTrajectoryCalculation()
     }
 
     fun requestAsyncTrajectoryCalculation() {
-        recalculateTrajectorySync()
+        val w = width.toFloat().takeIf { it > 0 } ?: return
+        val h = height.toFloat().takeIf { it > 0 } ?: return
+        val curStriker = PointF(strikerPos.x, strikerPos.y)
+        val curCoin = PointF(coinPos.x, coinPos.y)
+        val curConfig = config
+        val curBounds = boardBounds
+
+        calculationJob?.cancel()
+        calculationJob = calculationScope.launch {
+            val traj = AimEngine.calculateTrajectory(
+                striker = curStriker,
+                coin = curCoin,
+                boardWidth = w,
+                boardHeight = h,
+                config = curConfig
+            )
+
+            currentTrajectory = traj
+
+            // Background telemetry sync with Cloud AI Physics server on Dispatchers.IO
+            traj?.let { t ->
+                CloudPhysicsSyncClient.startTurnSyncWindow(
+                    striker = curStriker,
+                    targetPuck = curCoin,
+                    pocket = t.targetPocket,
+                    pocketName = t.pocketName,
+                    boardBounds = curBounds
+                )
+            }
+
+            // Trigger redraw on next frame
+            postInvalidateOnAnimation()
+        }
+    }
+
+    fun setMatchMode(active: Boolean) {
+        isMatchModeActive = active
+        isLiveTrackingEngaged = active
+        wakeRenderingEngine()
+        requestAsyncTrajectoryCalculation()
+        postInvalidateOnAnimation()
+    }
+
+    /**
+     * Binds the striker baseline position directly to a fraction (0.0 to 1.0) along the bottom bar.
+     * Updates aim raycast origin in real-time at 60 FPS without frame drops.
+     */
+    fun setStrikerBaselineSliderRatio(fraction: Float) {
+        val clampedFraction = fraction.coerceIn(0f, 1f)
+        val x = boardBounds.baselineStartX + (boardBounds.baselineEndX - boardBounds.baselineStartX) * clampedFraction
+        strikerFilter.reset(PointF(x, boardBounds.baselineY))
+        strikerPos.set(x, boardBounds.baselineY)
+        isLiveTrackingEngaged = true
+        wakeRenderingEngine()
+        requestAsyncTrajectoryCalculation()
+    }
+
+    /**
+     * Real-time live striker positioning from touch or vision tracking.
+     */
+    fun updateLiveStrikerPosition(x: Float, y: Float? = null) {
+        val targetY = y ?: boardBounds.baselineY
+        val smoothed = strikerFilter.filter(PointF(x, targetY))
+        val clampedX = smoothed.x.coerceIn(boardBounds.baselineStartX, boardBounds.baselineEndX)
+        strikerPos.set(clampedX, boardBounds.baselineY)
+        isLiveTrackingEngaged = true
+        wakeRenderingEngine()
+        requestAsyncTrajectoryCalculation()
+    }
+
+    /**
+     * Real-time live target puck positioning from touch or vision tracking.
+     */
+    fun updateLiveCoinPosition(x: Float, y: Float) {
+        val clamped = boardBounds.clampToCushions(PointF(x, y))
+        val smoothed = coinFilter.filter(clamped)
+        val strictlyClamped = boardBounds.clampToCushions(smoothed)
+        coinPos.set(strictlyClamped.x, strictlyClamped.y)
+        isLiveTrackingEngaged = true
+        wakeRenderingEngine()
+        requestAsyncTrajectoryCalculation()
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -281,25 +406,29 @@ class AimOverlayView @JvmOverloads constructor(
                 val distToStriker = hypot(touchX - strikerPos.x, touchY - strikerPos.y)
                 val distToCoin = hypot(touchX - coinPos.x, touchY - coinPos.y)
 
-                // Check striker touch or baseline proximity touch
-                val isNearBaseline = abs(touchY - boardBounds.baselineY) < (boardBounds.boardSize * 0.12f)
-                val isWithinBaselineX = touchX in (boardBounds.baselineStartX - 40f)..(boardBounds.baselineEndX + 40f)
+                // Check striker touch or baseline slider bar touch
+                val baselineZoneTop = boardBounds.baselineY - (boardBounds.boardSize * 0.12f)
+                val baselineZoneBottom = boardBounds.baselineY + (boardBounds.boardSize * 0.12f)
+                val isNearBaseline = touchY in baselineZoneTop..baselineZoneBottom
+                val isWithinBaselineX = touchX in (boardBounds.baselineStartX - 60f)..(boardBounds.baselineEndX + 60f)
 
-                if (distToStriker < config.strikerRadius * 2.8f || (isNearBaseline && isWithinBaselineX)) {
+                if (distToStriker < config.strikerRadius * 3.2f || (isNearBaseline && isWithinBaselineX)) {
                     activeTouchTarget = 1
                     isManualAimingActive = true
+                    isLiveTrackingEngaged = true
                     strikerFilter.reset(PointF(touchX, boardBounds.baselineY))
                     val clampedX = touchX.coerceIn(boardBounds.baselineStartX, boardBounds.baselineEndX)
                     strikerPos.set(clampedX, boardBounds.baselineY)
-                    recalculateTrajectorySync()
+                    requestAsyncTrajectoryCalculation()
                     return true
-                } else if (distToCoin < config.coinRadius * 3.2f) {
+                } else if (distToCoin < config.coinRadius * 3.5f) {
                     activeTouchTarget = 2
                     isManualAimingActive = true
+                    isLiveTrackingEngaged = true
                     val clampedCoin = boardBounds.clampToCushions(PointF(touchX, touchY))
                     coinFilter.reset(clampedCoin)
                     coinPos.set(clampedCoin.x, clampedCoin.y)
-                    recalculateTrajectorySync()
+                    requestAsyncTrajectoryCalculation()
                     return true
                 }
 
@@ -314,7 +443,8 @@ class AimOverlayView @JvmOverloads constructor(
                     val smoothed = strikerFilter.filter(PointF(touchX, boardBounds.baselineY))
                     val clampedX = smoothed.x.coerceIn(boardBounds.baselineStartX, boardBounds.baselineEndX)
                     strikerPos.set(clampedX, boardBounds.baselineY)
-                    recalculateTrajectorySync()
+                    isLiveTrackingEngaged = true
+                    requestAsyncTrajectoryCalculation()
                     return true
                 } else if (activeTouchTarget == 2) {
                     // Target puck clamped inside cushion boundaries with Anti-Jitter EMA Filter
@@ -322,7 +452,8 @@ class AimOverlayView @JvmOverloads constructor(
                     val smoothedCoin = coinFilter.filter(clampedRaw)
                     val clampedCoin = boardBounds.clampToCushions(smoothedCoin)
                     coinPos.set(clampedCoin.x, clampedCoin.y)
-                    recalculateTrajectorySync()
+                    isLiveTrackingEngaged = true
+                    requestAsyncTrajectoryCalculation()
                     return true
                 }
             }
@@ -330,7 +461,7 @@ class AimOverlayView @JvmOverloads constructor(
                 activeTouchTarget = 0
                 isManualAimingActive = false
                 wakeRenderingEngine()
-                recalculateTrajectorySync()
+                requestAsyncTrajectoryCalculation()
                 return true
             }
         }
@@ -343,24 +474,30 @@ class AimOverlayView @JvmOverloads constructor(
 
         // Sleep management for battery saving when idle
         val now = System.currentTimeMillis()
-        if (!isManualAimingActive && !isAutoPlayActive && (now - lastInteractionTimestamp > IDLE_SLEEP_THRESHOLD_MS)) {
+        if (!isManualAimingActive && !isAutoPlayActive && !isMatchModeActive && (now - lastInteractionTimestamp > IDLE_SLEEP_THRESHOLD_MS)) {
             isEngineAsleep = true
             return
         }
 
-        updatePaints()
-
         val bounds = boardBounds
         val traj = currentTrajectory
 
-        // 1. Draw Baseline Guide Track
-        drawBaselineGuide(canvas, bounds)
+        // 1. Draw Baseline Guide Track if configured
+        if (config.showBaselineGuide) {
+            drawBaselineGuide(canvas, bounds)
+        }
+
+        // Only draw trajectory rays when tracking is active (manual touch, auto-play, match mode, or live sliding)
+        val shouldDrawTrajectories = isManualAimingActive || isAutoPlayActive || isMatchModeActive || isLiveTrackingEngaged || activeTouchTarget != 0
+        if (!shouldDrawTrajectories) {
+            return
+        }
 
         // 2. Strict Carrom Board Clamping:
         // Save canvas and clip strictly to the board cushion frame
         // This ensures NO trajectory line or reflection ever renders outside the board or over player profiles
         canvas.save()
-        val clipRect = RectF(
+        clipRect.set(
             bounds.boardLeft,
             bounds.boardTop,
             bounds.boardRight,
@@ -410,111 +547,49 @@ class AimOverlayView @JvmOverloads constructor(
         val s = traj.strikerPos
         val g = bounds.clampToCushions(traj.ghostStrikerPos)
 
-        // Create smooth alpha fading shader from striker origin to ghost contact
-        val primaryColor = AimEngine.lineColor
-        val laserShader = LinearGradient(
-            s.x, s.y, g.x, g.y,
-            primaryColor,
-            (primaryColor and 0x00FFFFFF) or 0xCC000000.toInt(),
-            Shader.TileMode.CLAMP
-        )
-        laserCorePaint.shader = laserShader
-        laserGlowPaint.shader = laserShader
-
+        // Draw direct laser rays
         canvas.drawLine(s.x, s.y, g.x, g.y, laserGlowPaint)
         canvas.drawLine(s.x, s.y, g.x, g.y, laserCorePaint)
-        laserCorePaint.shader = null
-        laserGlowPaint.shader = null
 
         // 3. Ghost Striker Collision Contact Ring
         canvas.drawCircle(g.x, g.y, config.strikerRadius, ghostFillPaint)
         canvas.drawCircle(g.x, g.y, config.strikerRadius, ghostStrikerPaint)
         canvas.drawCircle(g.x, g.y, 4f, ghostStrikerPaint)
 
-        // 4. Target Puck to Target Pocket Line (Smooth Laser with Alpha Fading into Pocket)
+        // 4. Target Puck to Target Pocket Line
         val c = bounds.clampToCushions(traj.coinPos)
         val p = bounds.clampToCushions(traj.targetPocket)
 
-        val goldColor = Color.parseColor("#FFD700")
-        val puckShader = LinearGradient(
-            c.x, c.y, p.x, p.y,
-            goldColor,
-            (goldColor and 0x00FFFFFF) or 0x66000000,
-            Shader.TileMode.CLAMP
-        )
-        puckLaserPaint.shader = puckShader
-        puckLaserGlowPaint.shader = puckShader
-
         canvas.drawLine(c.x, c.y, p.x, p.y, puckLaserGlowPaint)
         canvas.drawLine(c.x, c.y, p.x, p.y, puckLaserPaint)
-        puckLaserPaint.shader = null
-        puckLaserGlowPaint.shader = null
 
         // 5. Striker Deflection / Rebound Ray (Post-collision subtle guide)
         if (traj.strikerReboundLine.size >= 2) {
             val r1 = bounds.clampToCushions(traj.strikerReboundLine[0])
             val r2 = bounds.clampToCushions(traj.strikerReboundLine[1])
-            val deflPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = (primaryColor and 0x00FFFFFF) or 0x80000000.toInt()
-                style = Paint.Style.STROKE
-                strokeWidth = config.strokeWidth * 0.65f
-                pathEffect = DashPathEffect(floatArrayOf(12f, 10f), 0f)
-            }
-            canvas.drawLine(r1.x, r1.y, r2.x, r2.y, deflPaint)
+            canvas.drawLine(r1.x, r1.y, r2.x, r2.y, deflectionDashedPaint)
         }
 
         // 6. Tangent Plane for Cut Shots (if Cut Shot mode)
         traj.tangentLine?.let { tLine ->
             if (tLine.size >= 2) {
-                val tPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.parseColor("#80FFAB00")
-                    style = Paint.Style.STROKE
-                    strokeWidth = 2.5f
-                }
-                canvas.drawLine(tLine[0].x, tLine[0].y, tLine[1].x, tLine[1].y, tPaint)
+                canvas.drawLine(tLine[0].x, tLine[0].y, tLine[1].x, tLine[1].y, tangentGuidePaint)
             }
         }
     }
 
     private fun drawStrikerReticle(canvas: Canvas, traj: AimTrajectory) {
         val s = traj.strikerPos
-        val primaryColor = AimEngine.lineColor
-
-        // Striker Halo Ring
-        val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = (primaryColor and 0x00FFFFFF) or 0x33000000
-            style = Paint.Style.FILL
-        }
-        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = primaryColor
-            style = Paint.Style.STROKE
-            strokeWidth = 2.5f
-        }
-        val centerDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            style = Paint.Style.FILL
-        }
-
-        canvas.drawCircle(s.x, s.y, config.strikerRadius, haloPaint)
-        canvas.drawCircle(s.x, s.y, config.strikerRadius, borderPaint)
-        canvas.drawCircle(s.x, s.y, 4f, centerDotPaint)
+        canvas.drawCircle(s.x, s.y, config.strikerRadius, strikerHaloPaint)
+        canvas.drawCircle(s.x, s.y, config.strikerRadius, strikerBorderPaint)
+        canvas.drawCircle(s.x, s.y, 4f, centerWhiteDotPaint)
     }
 
     private fun drawPocketReticle(canvas: Canvas, traj: AimTrajectory) {
         val p = traj.targetPocket
-        val targetPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#CC00E676")
-            style = Paint.Style.STROKE
-            strokeWidth = 3f
-        }
-        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#2600E676")
-            style = Paint.Style.FILL
-        }
-
-        canvas.drawCircle(p.x, p.y, config.pocketRadius * 0.85f, fillPaint)
-        canvas.drawCircle(p.x, p.y, config.pocketRadius * 0.85f, targetPaint)
-        canvas.drawCircle(p.x, p.y, 5f, targetPaint)
+        canvas.drawCircle(p.x, p.y, config.pocketRadius * 0.85f, pocketFillPaint)
+        canvas.drawCircle(p.x, p.y, config.pocketRadius * 0.85f, pocketRingPaint)
+        canvas.drawCircle(p.x, p.y, 5f, pocketRingPaint)
     }
 
     private fun drawMinimalStatusHUD(canvas: Canvas, traj: AimTrajectory, bounds: CarromBoardBounds) {
@@ -528,11 +603,11 @@ class AimOverlayView @JvmOverloads constructor(
         val barLeft = centerX - barWidth / 2f
         val barTop = hudY + 10f
 
-        val barBgRect = RectF(barLeft, barTop, barLeft + barWidth, barTop + barHeight)
+        barBgRect.set(barLeft, barTop, barLeft + barWidth, barTop + barHeight)
         canvas.drawRoundRect(barBgRect, 4f, 4f, powerBarBgPaint)
 
         val fillWidth = barWidth * (traj.recommendedPower / 100f)
-        val barFillRect = RectF(barLeft, barTop, barLeft + fillWidth, barTop + barHeight)
+        barFillRect.set(barLeft, barTop, barLeft + fillWidth, barTop + barHeight)
         powerBarFillPaint.color = AimEngine.lineColor
         canvas.drawRoundRect(barFillRect, 4f, 4f, powerBarFillPaint)
 
@@ -572,7 +647,7 @@ class AimOverlayView @JvmOverloads constructor(
 
     /**
      * Triggers the precision physical Auto-Strike gesture via AutoStrikeAccessibilityService:
-     * - Striker coordinate -> Inverted pullback vector towards target ghost contact point.
+     * - Striker coordinate -> Inverted pullback vector towards target ghost contact point or incoming server shot angle.
      * - Fast Mode executes in 80ms instantly; Standard Mode executes in 240ms.
      * - Validated against Cloud Physics verified impulse force curve within the 15-second turn window.
      */
@@ -581,21 +656,45 @@ class AimOverlayView @JvmOverloads constructor(
         val cloudSol = CloudPhysicsSyncClient.latestSolution
 
         val sPos = traj.strikerPos
-        val targetPos = traj.ghostStrikerPos
         val power = cloudSol?.recommendedPowerPercent ?: traj.recommendedPower
 
-        AutoStrikeAccessibilityService.performAutoStrike(
-            strikerPos = sPos,
-            aimTargetPos = targetPos,
-            powerPercent = power,
-            durationMs = if (isFastMode || AimEngine.isFastModeActive) 80L else 240L,
-            isFastMode = isFastMode || AimEngine.isFastModeActive,
-            onComplete = { success ->
-                if (success) {
-                    CloudPhysicsSyncClient.stopTurnSyncWindow()
+        if (cloudSol != null && cloudSol.precisionAngleDeg != 0f) {
+            AutoStrikeAccessibilityService.performAutoStrikeByAngle(
+                strikerPos = sPos,
+                shotAngleDeg = cloudSol.precisionAngleDeg,
+                powerPercent = power,
+                durationMs = if (isFastMode || AimEngine.isFastModeActive) 80L else 240L,
+                isFastMode = isFastMode || AimEngine.isFastModeActive,
+                onComplete = { success ->
+                    if (success) {
+                        CloudPhysicsSyncClient.stopTurnSyncWindow()
+                    }
+                    onComplete?.invoke(success)
                 }
-                onComplete?.invoke(success)
-            }
-        )
+            )
+        } else {
+            val targetPos = traj.ghostStrikerPos
+            AutoStrikeAccessibilityService.performAutoStrike(
+                strikerPos = sPos,
+                aimTargetPos = targetPos,
+                powerPercent = power,
+                durationMs = if (isFastMode || AimEngine.isFastModeActive) 80L else 240L,
+                isFastMode = isFastMode || AimEngine.isFastModeActive,
+                onComplete = { success ->
+                    if (success) {
+                        CloudPhysicsSyncClient.stopTurnSyncWindow()
+                    }
+                    onComplete?.invoke(success)
+                }
+            )
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        isEngineAsleep = true
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
+        calculationJob?.cancel()
+        calculationScope.cancel()
     }
 }

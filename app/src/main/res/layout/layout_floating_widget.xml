@@ -77,6 +77,24 @@
             android:layout_marginBottom="4dp"
             android:visibility="gone"/>
 
+        <!-- স্ট্রাইকার বেসলাইন স্লাইডার (লাইভ টাচ ট্র্যাকিং) -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Striker Position (Baseline Slider)"
+            android:textColor="#00E5FF"
+            android:textSize="11sp"
+            android:layout_marginTop="6dp"/>
+
+        <SeekBar
+            android:id="@+id/seekbar_striker_slider"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="100"
+            android:progress="50"
+            android:progressTint="#00E5FF"
+            android:thumbTint="#00E5FF"/>
+
         <!-- সেন্টার টার্গেট গাইড (লাকি শট) -->
         <Switch
             android:id="@+id/switch_center_target"

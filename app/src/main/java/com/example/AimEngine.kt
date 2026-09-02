@@ -1,5 +1,6 @@
 package com.example
 
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PointF
 import kotlinx.coroutines.*
@@ -385,6 +386,10 @@ object AimEngine {
 
     /**
      * Computes dynamic stroke power, pullback length, and category label.
+     * Implements dynamic shot power scaling based on distance:
+     * - Short distance to pocket (<200px): Low power (35-50%) for safe potting.
+     * - Medium distance (200px - 500px): Medium power (51-84%).
+     * - Long cushion bank/rebound (>500px): High power (85-100%).
      */
     fun computeDynamicStrokePower(
         striker: PointF,
@@ -393,26 +398,37 @@ object AimEngine {
         pocket: PointF,
         cushions: Int = 0
     ): Triple<Int, String, Float> {
-        val distStrikerToPuck = hypot(ghost.x - striker.x, ghost.y - striker.y)
+        val distStrikerToGhost = hypot(ghost.x - striker.x, ghost.y - striker.y)
         val distPuckToPocket = hypot(pocket.x - coin.x, pocket.y - coin.y)
-        val totalDistance = distStrikerToPuck + distPuckToPocket + (cushions * 240f)
+        val totalDistance = distStrikerToGhost + distPuckToPocket + (cushions * 240f)
 
         val powerPercent = when {
             cushions >= 2 -> (85 + (cushions * 5)).coerceIn(85, 100)
-            cushions == 1 -> ((totalDistance / 14f) + 45).toInt().coerceIn(58, 95)
-            totalDistance < 380f -> ((totalDistance / 16f) + 20).toInt().coerceIn(25, 45)
-            totalDistance < 780f -> ((totalDistance / 18f) + 28).toInt().coerceIn(46, 75)
-            else -> ((totalDistance / 16f) + 32).toInt().coerceIn(76, 100)
+            cushions == 1 || totalDistance >= 500f -> {
+                // Long cushion bank or long distance (>500px): High power (85-100%)
+                val progress = ((totalDistance - 500f) / 500f).coerceIn(0f, 1f)
+                (85 + (progress * 15f)).toInt().coerceIn(85, 100)
+            }
+            distPuckToPocket < 200f && cushions == 0 && distStrikerToGhost < 300f -> {
+                // Short distance to pocket (<200px): Low power (35-50%) for safe potting
+                val progress = (distPuckToPocket / 200f).coerceIn(0f, 1f)
+                (35 + (progress * 15f)).toInt().coerceIn(35, 50)
+            }
+            else -> {
+                // Medium distance: (51-84%)
+                val progress = ((totalDistance - 200f) / 300f).coerceIn(0f, 1f)
+                (51 + (progress * 33f)).toInt().coerceIn(51, 84)
+            }
         }
 
         val label = when {
-            powerPercent <= 42 -> "Soft Touch ($powerPercent%)"
-            powerPercent <= 72 -> "Medium Snap ($powerPercent%)"
-            powerPercent <= 88 -> "Heavy Strike ($powerPercent%)"
-            else -> "Max Power ($powerPercent%)"
+            powerPercent <= 45 -> "Soft Pot ($powerPercent%)"
+            powerPercent <= 70 -> "Medium Snap ($powerPercent%)"
+            powerPercent <= 84 -> "Firm Strike ($powerPercent%)"
+            else -> "High Power Bank ($powerPercent%)"
         }
 
-        val pullbackPx = (powerPercent / 100f) * 160f
+        val pullbackPx = (powerPercent / 100f) * 180f
         return Triple(powerPercent, label, pullbackPx)
     }
 
@@ -1354,7 +1370,101 @@ object AimEngine {
     var isCenterBullseyeActive: Boolean = false
     var laserThickness: Float = 4.0f
     var lineColor: Int = Color.parseColor("#00E5FF")
+
+    // =========================================================================
+    // LIGHTWEIGHT VISION PUCK & STRIKER DETECTOR HELPER
+    // =========================================================================
+    /**
+     * Color matrix & circle threshold helper:
+     * Extracts active striker and puck positions directly from the game board viewport
+     * or screen image buffer via fast color-matrix and brightness clustering.
+     */
+    fun detectBoardEntitiesFromViewport(
+        boardBitmap: Bitmap?,
+        boardBounds: CarromBoardBounds
+    ): DetectedBoardVisionResult {
+        if (boardBitmap == null || boardBitmap.isRecycled || boardBitmap.width < 10 || boardBitmap.height < 10) {
+            val center = boardBounds.boardCenter
+            return DetectedBoardVisionResult(
+                strikerPosition = PointF((boardBounds.baselineStartX + boardBounds.baselineEndX) / 2f, boardBounds.baselineY),
+                detectedPucks = listOf(
+                    VisionPuck("QUEEN", PointF(center.x, center.y), "QUEEN", radius = 24f),
+                    VisionPuck("WHITE_1", PointF(center.x - 70f, center.y - 60f), "WHITE", radius = 23f),
+                    VisionPuck("BLACK_1", PointF(center.x + 65f, center.y - 50f), "BLACK", radius = 23f)
+                ),
+                isVisionCalibrated = true
+            )
+        }
+
+        val bmpW = boardBitmap.width
+        val bmpH = boardBitmap.height
+        val cLeft = boardBounds.cushionLeft.coerceIn(0f, bmpW - 1f).toInt()
+        val cTop = boardBounds.cushionTop.coerceIn(0f, bmpH - 1f).toInt()
+        val cRight = boardBounds.cushionRight.coerceIn(0f, bmpW - 1f).toInt()
+        val cBottom = boardBounds.cushionBottom.coerceIn(0f, bmpH - 1f).toInt()
+
+        val foundPucks = mutableListOf<VisionPuck>()
+        var foundStriker: PointF? = null
+        val minClusterDist = (boardBounds.boardSize * 0.045f).coerceAtLeast(20f)
+        val step = 12 // Fast subsampling grid for 60 FPS non-blocking execution
+
+        for (y in cTop until cBottom step step) {
+            for (x in cLeft until cRight step step) {
+                val pixel = boardBitmap.getPixel(x, y)
+                val r = Color.red(pixel)
+                val g = Color.green(pixel)
+                val b = Color.blue(pixel)
+
+                // 1. Queen Red/Pink detection: High R, lower G/B
+                if (r > 180 && g < 90 && b < 110) {
+                    val pt = PointF(x.toFloat(), y.toFloat())
+                    if (foundPucks.none { hypot(it.position.x - pt.x, it.position.y - pt.y) < minClusterDist }) {
+                        foundPucks.add(VisionPuck("QUEEN_${foundPucks.size}", pt, "QUEEN", radius = 24f))
+                    }
+                }
+                // 2. White Puck / Striker detection: High luminance across R, G, B
+                else if (r > 215 && g > 215 && b > 215) {
+                    val pt = PointF(x.toFloat(), y.toFloat())
+                    val isNearBaseline = abs(y - boardBounds.baselineY) < (boardBounds.boardSize * 0.12f)
+                    if (isNearBaseline && foundStriker == null) {
+                        foundStriker = pt
+                    } else if (foundPucks.none { hypot(it.position.x - pt.x, it.position.y - pt.y) < minClusterDist }) {
+                        foundPucks.add(VisionPuck("WHITE_${foundPucks.size}", pt, "WHITE", radius = 23f))
+                    }
+                }
+                // 3. Black / Dark Puck detection: Low brightness
+                else if (r < 65 && g < 65 && b < 65 && y > cTop + 30 && y < cBottom - 30) {
+                    val pt = PointF(x.toFloat(), y.toFloat())
+                    if (foundPucks.none { hypot(it.position.x - pt.x, it.position.y - pt.y) < minClusterDist }) {
+                        foundPucks.add(VisionPuck("BLACK_${foundPucks.size}", pt, "BLACK", radius = 23f))
+                    }
+                }
+            }
+        }
+
+        val finalStriker = foundStriker ?: PointF(
+            (boardBounds.baselineStartX + boardBounds.baselineEndX) / 2f,
+            boardBounds.baselineY
+        )
+
+        return DetectedBoardVisionResult(
+            strikerPosition = finalStriker,
+            detectedPucks = if (foundPucks.isNotEmpty()) foundPucks else listOf(
+                VisionPuck("QUEEN", boardBounds.boardCenter, "QUEEN", radius = 24f)
+            ),
+            isVisionCalibrated = true
+        )
+    }
 }
+
+/**
+ * Result data holder for vision puck and striker extraction.
+ */
+data class DetectedBoardVisionResult(
+    val strikerPosition: PointF,
+    val detectedPucks: List<VisionPuck>,
+    val isVisionCalibrated: Boolean = true
+)
 
 /**
  * Precision Exponential Moving Average (EMA) Low-Pass Filter for Anti-Jitter Striker Smoothing:

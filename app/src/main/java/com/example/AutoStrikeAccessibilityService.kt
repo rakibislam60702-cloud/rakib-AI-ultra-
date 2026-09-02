@@ -14,7 +14,9 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Toast
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * AutoStrikeAccessibilityService allows the app to dispatch precision touch gestures
@@ -100,6 +102,26 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
 
             service.executeSlingshotGesture(strikerPos, aimTargetPos, powerPercent, durationMs, isFastMode, onComplete)
         }
+
+        /**
+         * Dispatches strike directly from incoming shot angle (degrees) and power percent.
+         */
+        fun performAutoStrikeByAngle(
+            strikerPos: PointF,
+            shotAngleDeg: Float,
+            powerPercent: Int = 85,
+            durationMs: Long = 240L,
+            isFastMode: Boolean = false,
+            onComplete: ((Boolean) -> Unit)? = null
+        ) {
+            val rad = Math.toRadians(shotAngleDeg.toDouble())
+            val targetDistance = 200f
+            val aimTarget = PointF(
+                (strikerPos.x + cos(rad) * targetDistance).toFloat(),
+                (strikerPos.y + sin(rad) * targetDistance).toFloat()
+            )
+            performAutoStrike(strikerPos, aimTarget, powerPercent, durationMs, isFastMode, onComplete)
+        }
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -164,12 +186,28 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
         val normX = dx / dist
         val normY = dy / dist
 
-        // Calculate dynamic shot power based on distance if default power was requested
+        // Calculate dynamic shot power scalar based on distance
         val computedPower = if (powerPercent in 20..100) {
             powerPercent
         } else {
-            // Scale dynamically based on distance: short distance = gentle touch, long distance = high power
-            ((dist / 14f) + 30f).toInt().coerceIn(35, 100)
+            // Scale dynamically based on distance:
+            // Short distance to pocket (<200px): Low power (35-50%) for safe potting.
+            // Medium distance (200-500px): Medium power (51-84%).
+            // Long distance / bank (>500px): High power (85-100%).
+            when {
+                dist >= 500f -> {
+                    val progress = ((dist - 500f) / 500f).coerceIn(0f, 1f)
+                    (85 + (progress * 15f)).toInt().coerceIn(85, 100)
+                }
+                dist < 200f -> {
+                    val progress = (dist / 200f).coerceIn(0f, 1f)
+                    (35 + (progress * 15f)).toInt().coerceIn(35, 50)
+                }
+                else -> {
+                    val progress = ((dist - 200f) / 300f).coerceIn(0f, 1f)
+                    (51 + (progress * 33f)).toInt().coerceIn(51, 84)
+                }
+            }
         }
         val clampedPower = computedPower.coerceIn(20, 100)
         val maxPullDistance = 180f
