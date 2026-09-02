@@ -24,14 +24,15 @@ jobs:
         mkdir -p ~/.android
         keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
-    - name: Setup Gradle and Build
+    - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
       with:
         gradle-version: '9.3.1'
 
     - name: Run Build
       run: |
-        gradle assembleDebug --no-daemon --info || gradle assembleDebug --stacktrace
+        # Configuration Cache এবং Daemon বন্ধ করে ক্লিন বিল্ড
+        gradle assembleDebug --no-configuration-cache --no-daemon --warning-mode none
 
     - name: Upload APK Artifact
       if: always()
@@ -39,3 +40,4 @@ jobs:
       with:
         name: Rakib-AI-ultra-APK
         path: app/build/outputs/apk/debug/*.apk
+        
