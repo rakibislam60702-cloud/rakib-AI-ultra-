@@ -27,7 +27,7 @@ jobs:
     - name: Setup Gradle and Build
       uses: gradle/actions/setup-gradle@v3
       with:
-        gradle-version: '8.4'
+        gradle-version: '9.3.1'
 
     - name: Run Build
       run: |
@@ -38,4 +38,3 @@ jobs:
       with:
         name: Rakib-AI-ultra-APK
         path: app/build/outputs/apk/debug/*.apk
-        
