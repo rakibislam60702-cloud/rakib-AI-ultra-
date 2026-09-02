@@ -14,16 +14,24 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Toast
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlin.math.cos
-import kotlin.math.hypot
-import kotlin.math.sin
+import kotlin.math.*
 
 /**
  * AutoStrikeAccessibilityService allows the app to dispatch precision touch gestures
  * for aiming and automated strike execution in Carrom Pool:
- * 1. Constructs dynamic GestureDescription starting from detected striker coordinate.
- * 2. Drags backwards along the calculated inverted aim vector (simulating slingshot pullback).
- * 3. Releases within 200-300ms smoothly via dispatchGesture().
+ * 1. Autonomous Turn & Stability Trigger.
+ * 2. Inverted Slingshot Math:
+ *      Theta = locked Ghost-Ball trajectory angle.
+ *      PullAngle = Theta + 180 degrees.
+ *      Short pot (< 250px): Pull back 45-60px (Soft touch).
+ *      Long bank/rebound (> 500px): Pull back 110-135px (Full power).
+ *      EndX = Xs + (pullDistance * cos(PullAngle))
+ *      EndY = Ys + (pullDistance * sin(PullAngle))
+ * 3. Humanized Gesture Dispatch:
+ *      Path() with a subtle quadratic Bezier curve (simulating natural human thumb drag)
+ *      over a duration of 120-160ms. Release cleanly at (EndX, EndY).
+ * 4. Cooldown Lock:
+ *      Locks Auto-Strike for 2.5 seconds (2500ms) to allow pucks to finish rolling before looking for the next turn.
  */
 open class AutoStrikeAccessibilityService : AccessibilityService() {
 
@@ -36,6 +44,32 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
         val lastExecutedShotInfo = MutableStateFlow("Ready for Auto-Play Strike")
 
         var instance: AutoStrikeAccessibilityService? = null
+
+        // Cooldown lock to prevent duplicate shots while balls are rolling
+        @Volatile
+        var isCooldownLocked: Boolean = false
+            private set
+        private var lastShotDispatchTimestamp = 0L
+        private const val COOLDOWN_LOCK_MS = 2500L
+
+        /**
+         * Checks if the 2.5-second cooldown lock is currently active.
+         */
+        fun isShotCooldownActive(): Boolean {
+            val now = System.currentTimeMillis()
+            if (isCooldownLocked && now - lastShotDispatchTimestamp >= COOLDOWN_LOCK_MS) {
+                isCooldownLocked = false
+            }
+            return isCooldownLocked
+        }
+
+        fun triggerCooldownLock() {
+            lastShotDispatchTimestamp = System.currentTimeMillis()
+            isCooldownLocked = true
+            Handler(Looper.getMainLooper()).postDelayed({
+                isCooldownLocked = false
+            }, COOLDOWN_LOCK_MS)
+        }
 
         /**
          * Verifies whether the Accessibility Service permission is granted in Android Settings.
@@ -79,17 +113,20 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
         }
 
         /**
-         * Dispatches a precision physical strike gesture:
-         * - Starts at the striker center.
-         * - Drags backwards along the inverted aim vector (opposite of target direction).
-         * - In Fast Mode, executes within 80ms for instant auto-play strike; otherwise 220-260ms.
-         * - Power is dynamically scaled based on distance between striker and target puck.
+         * Dispatches true autonomous slingshot auto-strike injection with humanized curve:
+         *
+         * @param strikerPos (Xs, Ys)
+         * @param shotAngleDeg (Theta: Ghost-ball forward aim angle)
+         * @param targetPuckDist Distance to target puck in pixels
+         * @param durationMs Gesture duration (120-160ms)
+         * @param isFastMode Optional fast mode
+         * @param onComplete Callback upon completion
          */
-        fun performAutoStrike(
+        fun performSlingshotAutoStrike(
             strikerPos: PointF,
-            aimTargetPos: PointF,
-            powerPercent: Int = 85,
-            durationMs: Long = 240L,
+            shotAngleDeg: Float,
+            targetPuckDist: Float,
+            durationMs: Long = 140L,
             isFastMode: Boolean = false,
             onComplete: ((Boolean) -> Unit)? = null
         ) {
@@ -100,27 +137,47 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
                 return
             }
 
-            service.executeSlingshotGesture(strikerPos, aimTargetPos, powerPercent, durationMs, isFastMode, onComplete)
+            if (isShotCooldownActive()) {
+                Log.d(TAG, "Auto-Strike in cooldown lock (2.5s). Skipping.")
+                onComplete?.invoke(false)
+                return
+            }
+
+            service.executeSlingshotShot(strikerPos, shotAngleDeg, targetPuckDist, durationMs, isFastMode, onComplete)
         }
 
         /**
-         * Dispatches strike directly from incoming shot angle (degrees) and power percent.
+         * Backward compatibility dispatch:
          */
+        fun performAutoStrike(
+            strikerPos: PointF,
+            aimTargetPos: PointF,
+            powerPercent: Int = 85,
+            durationMs: Long = 140L,
+            isFastMode: Boolean = false,
+            onComplete: ((Boolean) -> Unit)? = null
+        ) {
+            val dx = aimTargetPos.x - strikerPos.x
+            val dy = aimTargetPos.y - strikerPos.y
+            val dist = hypot(dx, dy)
+            val angleDeg = (Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 360f) % 360f
+            performSlingshotAutoStrike(strikerPos, angleDeg, dist, durationMs, isFastMode, onComplete)
+        }
+
         fun performAutoStrikeByAngle(
             strikerPos: PointF,
             shotAngleDeg: Float,
             powerPercent: Int = 85,
-            durationMs: Long = 240L,
+            durationMs: Long = 140L,
             isFastMode: Boolean = false,
             onComplete: ((Boolean) -> Unit)? = null
         ) {
-            val rad = Math.toRadians(shotAngleDeg.toDouble())
-            val targetDistance = 200f
-            val aimTarget = PointF(
-                (strikerPos.x + cos(rad) * targetDistance).toFloat(),
-                (strikerPos.y + sin(rad) * targetDistance).toFloat()
-            )
-            performAutoStrike(strikerPos, aimTarget, powerPercent, durationMs, isFastMode, onComplete)
+            val estimatedPuckDist = when {
+                powerPercent >= 85 -> 550f
+                powerPercent <= 45 -> 180f
+                else -> 350f
+            }
+            performSlingshotAutoStrike(strikerPos, shotAngleDeg, estimatedPuckDist, durationMs, isFastMode, onComplete)
         }
     }
 
@@ -153,15 +210,24 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Executes the slingshot touch gesture:
-     * 1. Touch-down at striker origin.
-     * 2. Pullback opposite to aim target vector with dynamic power based on distance.
-     * 3. Fast Mode executes instantly in 80ms; Standard Mode executes in 220-260ms.
+     * Executes True Autonomous Slingshot Gesture with Quadratic Bezier Humanized Curve:
+     *
+     * 1. Inverted Slingshot Math:
+     *      PullAngle = Theta + 180 degrees.
+     *      Short pot (< 250px): Pull back 45-60px (Soft touch).
+     *      Long bank/rebound (> 500px): Pull back 110-135px (Full power).
+     *      EndX = Xs + (pullDistance * cos(PullAngle))
+     *      EndY = Ys + (pullDistance * sin(PullAngle))
+     * 2. Humanized Gesture Dispatch:
+     *      Path() with a subtle quadratic Bezier curve (simulating natural human thumb drag)
+     *      over a duration of 120-160ms. Release cleanly at (EndX, EndY).
+     * 3. Cooldown Lock:
+     *      Locks Auto-Strike for 2.5 seconds (2500ms) to allow pucks to finish rolling.
      */
-    private fun executeSlingshotGesture(
-        striker: PointF,
-        target: PointF,
-        powerPercent: Int,
+    private fun executeSlingshotShot(
+        strikerPos: PointF,
+        shotAngleDeg: Float,
+        targetPuckDist: Float,
         durationMs: Long,
         isFastMode: Boolean,
         onComplete: ((Boolean) -> Unit)?
@@ -172,80 +238,75 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
             return
         }
 
-        val dx = target.x - striker.x
-        val dy = target.y - striker.y
-        val dist = hypot(dx, dy)
+        // 1. Inverted Slingshot Math
+        // Read locked Ghost-Ball trajectory angle (Theta)
+        // Slingshot pull angle is strictly inverted: PullAngle = Theta + 180 degrees
+        val pullAngleDeg = (shotAngleDeg + 180f) % 360f
+        val pullAngleRad = Math.toRadians(pullAngleDeg.toDouble())
 
-        if (dist < 1f) {
-            Log.w(TAG, "Invalid aim vector distance: $dist")
-            onComplete?.invoke(false)
-            return
-        }
-
-        // Normalized aim vector
-        val normX = dx / dist
-        val normY = dy / dist
-
-        // Calculate dynamic shot power scalar based on distance
-        val computedPower = if (powerPercent in 20..100) {
-            powerPercent
-        } else {
-            // Scale dynamically based on distance:
-            // Short distance to pocket (<200px): Low power (35-50%) for safe potting.
-            // Medium distance (200-500px): Medium power (51-84%).
-            // Long distance / bank (>500px): High power (85-100%).
-            when {
-                dist >= 500f -> {
-                    val progress = ((dist - 500f) / 500f).coerceIn(0f, 1f)
-                    (85 + (progress * 15f)).toInt().coerceIn(85, 100)
-                }
-                dist < 200f -> {
-                    val progress = (dist / 200f).coerceIn(0f, 1f)
-                    (35 + (progress * 15f)).toInt().coerceIn(35, 50)
-                }
-                else -> {
-                    val progress = ((dist - 200f) / 300f).coerceIn(0f, 1f)
-                    (51 + (progress * 33f)).toInt().coerceIn(51, 84)
-                }
+        // Calculate pull distance based on target puck distance:
+        // Short pot (< 250px): Pull back 45-60px (Soft touch).
+        // Long bank/rebound (> 500px): Pull back 110-135px (Full power).
+        val pullDistance = when {
+            targetPuckDist < 250f -> {
+                val factor = (targetPuckDist / 250f).coerceIn(0f, 1f)
+                45f + (factor * 15f) // 45-60px
+            }
+            targetPuckDist > 500f -> {
+                val factor = ((targetPuckDist - 500f) / 500f).coerceIn(0f, 1f)
+                110f + (factor * 25f) // 110-135px
+            }
+            else -> {
+                val factor = ((targetPuckDist - 250f) / 250f).coerceIn(0f, 1f)
+                60f + (factor * 50f) // 60-110px
             }
         }
-        val clampedPower = computedPower.coerceIn(20, 100)
-        val maxPullDistance = 180f
-        val pullDistance = (clampedPower / 100f) * maxPullDistance
 
-        // Inverted aim vector endpoint (pulling the striker backwards charges the shot)
-        val pullBackEndX = striker.x - normX * pullDistance
-        val pullBackEndY = striker.y - normY * pullDistance
+        // Compute Drag End Point:
+        // EndX = Xs + (pullDistance * cos(PullAngle))
+        // EndY = Ys + (pullDistance * sin(PullAngle))
+        val endX = (strikerPos.x + (pullDistance * cos(pullAngleRad))).toFloat()
+        val endY = (strikerPos.y + (pullDistance * sin(pullAngleRad))).toFloat()
 
-        // Construct dynamic force curve gesture path:
-        // Striker Center -> Smooth Interpolated Pullback Path with non-linear force acceleration
+        // 2. Humanized Gesture Dispatch:
+        // Dispatch the gesture using Path() with a subtle quadratic Bezier curve
+        // (simulating natural human thumb drag) over a duration of 120-160ms.
         val path = Path().apply {
-            moveTo(striker.x, striker.y)
-            // Quadratic Bezier or direct line along the confirmed server vector trajectory
-            val midX = striker.x - normX * (pullDistance * 0.5f)
-            val midY = striker.y - normY * (pullDistance * 0.5f)
-            lineTo(midX, midY)
-            lineTo(pullBackEndX, pullBackEndY)
+            moveTo(strikerPos.x, strikerPos.y)
+
+            // Calculate subtle quadratic Bezier control point with slight natural perpendicular deviation (2-4px)
+            val midX = (strikerPos.x + endX) / 2f
+            val midY = (strikerPos.y + endY) / 2f
+
+            // Perpendicular unit vector to the pull direction for realistic human thumb arc
+            val perpAngleRad = pullAngleRad + (PI / 2.0)
+            val thumbArchOffset = 3.5f
+            val controlX = (midX + thumbArchOffset * cos(perpAngleRad)).toFloat()
+            val controlY = (midY + thumbArchOffset * sin(perpAngleRad)).toFloat()
+
+            quadTo(controlX, controlY, endX, endY)
         }
 
-        val gestureDuration = if (isFastMode) 80L else durationMs.coerceIn(120L, 300L)
+        // Duration: 120-160ms (or 80ms in Fast Mode)
+        val gestureDuration = if (isFastMode) 80L else durationMs.coerceIn(120L, 160L)
         val stroke = GestureDescription.StrokeDescription(path, 0L, gestureDuration)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
         isAutoPlayExecuting.value = true
-        val modeLabel = if (isFastMode) "⚡ Fast (80ms)" else "Standard (${gestureDuration}ms)"
-        lastExecutedShotInfo.value = "Executing Strike: Force $clampedPower% [$modeLabel]"
+        // 4. Cooldown Lock for 2.5 seconds
+        triggerCooldownLock()
+
+        lastExecutedShotInfo.value = "Auto Slingshot: Pull ${pullDistance.toInt()}px in ${gestureDuration}ms"
 
         val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 super.onCompleted(gestureDescription)
                 isAutoPlayExecuting.value = false
-                Log.d(TAG, "Auto-Strike gesture completed successfully in ${gestureDuration}ms.")
+                Log.d(TAG, "Slingshot Auto-Strike executed cleanly at ($endX, $endY) in ${gestureDuration}ms.")
                 mainHandler.post {
-                    val toastMsg = if (isFastMode) "⚡ Fast Auto-Strike Fired! (80ms)" else "🎯 Auto-Strike Executed ($clampedPower% Power)"
                     Toast.makeText(
                         this@AutoStrikeAccessibilityService,
-                        toastMsg,
+                        "🎯 Slingshot Strike Fired! (${pullDistance.toInt()}px, ${gestureDuration}ms)",
                         Toast.LENGTH_SHORT
                     ).show()
                     onComplete?.invoke(true)
@@ -255,7 +316,7 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
             override fun onCancelled(gestureDescription: GestureDescription?) {
                 super.onCancelled(gestureDescription)
                 isAutoPlayExecuting.value = false
-                Log.w(TAG, "Auto-Strike gesture was cancelled.")
+                Log.w(TAG, "Slingshot Auto-Strike gesture was cancelled.")
                 mainHandler.post {
                     onComplete?.invoke(false)
                 }
@@ -264,7 +325,7 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
 
         if (!dispatched) {
             isAutoPlayExecuting.value = false
-            Log.e(TAG, "Failed to dispatch auto-strike gesture.")
+            Log.e(TAG, "Failed to dispatch slingshot auto-strike gesture.")
             mainHandler.post {
                 onComplete?.invoke(false)
             }

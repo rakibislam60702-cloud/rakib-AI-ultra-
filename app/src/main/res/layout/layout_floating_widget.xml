@@ -1,169 +1,237 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root_floating_container"
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
-    android:orientation="vertical">
+    android:orientation="horizontal"
+    android:gravity="center_vertical">
 
-    <!-- ছোট গোল ফ্লোটিং বাবল আইকন -->
-    <ImageView
-        android:id="@+id/floating_bubble_icon"
-        android:layout_width="54dp"
-        android:layout_height="54dp"
-        android:background="@drawable/bg_neon_bubble"
-        android:src="@drawable/ic_bubble_crosshair"
-        android:padding="9dp"
-        android:elevation="12dp"
-        android:contentDescription="Rakib Aim HUD" />
-
-    <!-- পরিচ্ছন্ন কন্ট্রোল প্যানেল -->
+    <!-- Unified Single Attached Container for the two pill buttons -->
     <LinearLayout
-        android:id="@+id/floating_menu_container"
-        android:layout_width="230dp"
+        android:id="@+id/pill_bar_container"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_pill_container"
+        android:orientation="vertical"
+        android:padding="3dp"
+        android:elevation="14dp">
+
+        <!-- Top Button: Auto-Play Toggle Pill -->
+        <LinearLayout
+            android:id="@+id/btn_auto_play_pill"
+            android:layout_width="122dp"
+            android:layout_height="38dp"
+            android:background="@drawable/bg_pill_top"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp">
+
+            <!-- Small Glowing Status LED -->
+            <View
+                android:id="@+id/led_status_indicator"
+                android:layout_width="10dp"
+                android:layout_height="10dp"
+                android:background="@drawable/bg_led_red"
+                android:layout_marginEnd="6dp" />
+
+            <!-- Pause/Play Icon (|| / >) -->
+            <ImageView
+                android:id="@+id/icon_play_pause"
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:src="@drawable/ic_play_arrow"
+                android:layout_marginEnd="6dp"
+                android:contentDescription="Play/Pause Icon" />
+
+            <!-- Auto-Play label -->
+            <TextView
+                android:id="@+id/tv_auto_play_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="MANUAL"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Attached Divider line -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#2600E5FF"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="2dp" />
+
+        <!-- Bottom Button: "Rakib Ultra" Pill -->
+        <LinearLayout
+            android:id="@+id/btn_rakib_ultra_pill"
+            android:layout_width="122dp"
+            android:layout_height="38dp"
+            android:background="@drawable/bg_pill_bottom"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp">
+
+            <!-- Cyan AI Chip Icon -->
+            <ImageView
+                android:id="@+id/icon_ai_chip"
+                android:layout_width="17dp"
+                android:layout_height="17dp"
+                android:src="@drawable/ic_ai_chip"
+                android:layout_marginEnd="6dp"
+                android:contentDescription="AI Chip Icon" />
+
+            <!-- "Rakib Ultra" label -->
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Rakib Ultra"
+                android:textColor="#00E5FF"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <!-- Chevron indicator for drawer state -->
+            <TextView
+                android:id="@+id/tv_drawer_chevron"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="⚙"
+                android:textColor="#80FFFFFF"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Compact Sliding Drawer (Expands/Collapses on tapping "Rakib Ultra" pill) -->
+    <LinearLayout
+        android:id="@+id/compact_settings_drawer"
+        android:layout_width="186dp"
         android:layout_height="wrap_content"
         android:background="@drawable/bg_glassmorphic_popup"
         android:orientation="vertical"
-        android:padding="12dp"
-        android:layout_marginTop="6dp"
-        android:visibility="gone">
+        android:padding="10dp"
+        android:layout_marginStart="8dp"
+        android:visibility="gone"
+        android:elevation="16dp">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="RAKIB AI ULTRA HUD"
-            android:textColor="#00E5FF"
-            android:textStyle="bold"
-            android:textSize="13sp" />
-
-        <!-- ম্যাচ টগল: শুধু ম্যাচেই দাগ দেখাবে -->
-        <Switch
-            android:id="@+id/switch_match_active"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Match Mode (Draw Lines)"
-            android:textColor="#FFFFFF"
-            android:textSize="12sp"
-            android:layout_marginTop="6dp"/>
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
 
-        <!-- অটো প্লে টগল -->
-        <Switch
-            android:id="@+id/switch_auto_play"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Auto Play Strike"
-            android:textColor="#00E5FF"
-            android:textSize="12sp"/>
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="RAKIB ULTRA AIM"
+                android:textColor="#00E5FF"
+                android:textStyle="bold"
+                android:textSize="11sp" />
 
-        <!-- ফাস্ট মোড অটো-স্ট্রাইক টগল (80ms ইনস্ট্যান্ট ডিসপ্যাচ) -->
-        <Switch
-            android:id="@+id/switch_fast_mode"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="⚡ Fast Mode (80ms Strike)"
-            android:textColor="#FF9100"
-            android:checked="true"
-            android:textSize="12sp"/>
+            <!-- Close Drawer Button -->
+            <TextView
+                android:id="@+id/btn_close_drawer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="✕"
+                android:textColor="#B0BEC5"
+                android:textSize="13sp"
+                android:padding="2dp" />
+        </LinearLayout>
 
-        <!-- ইনস্ট্যান্ট অটো স্ট্রাইক বাটন -->
-        <Button
-            android:id="@+id/btn_trigger_auto_strike"
-            android:layout_width="match_parent"
-            android:layout_height="32dp"
-            android:text="⚡ FIRE AUTO-STRIKE"
-            android:textSize="10sp"
-            android:textColor="#060B13"
-            android:textStyle="bold"
-            android:backgroundTint="#FFD700"
-            android:layout_marginTop="2dp"
-            android:layout_marginBottom="4dp"
-            android:visibility="gone"/>
-
-        <!-- স্ট্রাইকার বেসলাইন স্লাইডার (লাইভ টাচ ট্র্যাকিং) -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Striker Position (Baseline Slider)"
-            android:textColor="#00E5FF"
-            android:textSize="11sp"
-            android:layout_marginTop="6dp"/>
-
-        <SeekBar
-            android:id="@+id/seekbar_striker_slider"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:max="100"
-            android:progress="50"
-            android:progressTint="#00E5FF"
-            android:thumbTint="#00E5FF"/>
-
-        <!-- সেন্টার টার্গেট গাইড (লাকি শট) -->
-        <Switch
-            android:id="@+id/switch_center_target"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Lucky Shot Bullseye"
-            android:textColor="#FFD700"
-            android:textSize="12sp"/>
-
+        <!-- Line Thickness Slider -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Line Thickness"
-            android:textColor="#AAAAAA"
-            android:textSize="11sp"
-            android:layout_marginTop="6dp"/>
+            android:textColor="#B0BEC5"
+            android:textSize="10sp"
+            android:layout_marginTop="6dp" />
 
         <SeekBar
             android:id="@+id/seekbar_thickness"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:max="15"
-            android:progress="4"/>
+            android:max="12"
+            android:progress="3"
+            android:progressTint="#00E5FF"
+            android:thumbTint="#00E5FF"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp" />
 
-        <!-- কালার অপশন -->
+        <!-- Laser Color Palette (Cyan, Yellow, Red, Green) -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Laser Color"
+            android:textColor="#B0BEC5"
+            android:textSize="10sp"
+            android:layout_marginTop="6dp" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center"
-            android:layout_marginTop="6dp">
+            android:layout_marginTop="4dp">
 
             <Button
                 android:id="@+id/btn_color_cyan"
-                android:layout_width="36dp"
-                android:layout_height="32dp"
+                android:layout_width="34dp"
+                android:layout_height="30dp"
                 android:backgroundTint="#00E5FF"
-                android:layout_marginEnd="4dp"/>
+                android:layout_marginEnd="4dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:padding="0dp" />
 
             <Button
                 android:id="@+id/btn_color_gold"
-                android:layout_width="36dp"
-                android:layout_height="32dp"
+                android:layout_width="34dp"
+                android:layout_height="30dp"
                 android:backgroundTint="#FFD600"
-                android:layout_marginEnd="4dp"/>
+                android:layout_marginEnd="4dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:padding="0dp" />
 
             <Button
                 android:id="@+id/btn_color_red"
-                android:layout_width="36dp"
-                android:layout_height="32dp"
+                android:layout_width="34dp"
+                android:layout_height="30dp"
                 android:backgroundTint="#FF1744"
-                android:layout_marginEnd="4dp"/>
+                android:layout_marginEnd="4dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:padding="0dp" />
 
             <Button
                 android:id="@+id/btn_color_green"
-                android:layout_width="36dp"
-                android:layout_height="32dp"
-                android:backgroundTint="#00E676"/>
+                android:layout_width="34dp"
+                android:layout_height="30dp"
+                android:backgroundTint="#00E676"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:padding="0dp" />
         </LinearLayout>
 
-        <!-- পজ বাটন (অ্যাপ বন্ধ না করে শুধু ট্র্যাকিং পজ রাখা) -->
+        <!-- Toggle Aim Lines (Visible / Hidden) -->
         <Button
-            android:id="@+id/btn_pause_tracking"
+            android:id="@+id/btn_toggle_aim_lines"
             android:layout_width="match_parent"
-            android:layout_height="36dp"
+            android:layout_height="30dp"
             android:layout_marginTop="8dp"
-            android:text="PAUSE TRACKING"
-            android:textSize="11sp"
+            android:text="HIDE AIM LINES"
+            android:textSize="9sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
             android:backgroundTint="#263238"
-            android:textColor="#FFFFFF"/>
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:padding="0dp" />
     </LinearLayout>
 </LinearLayout>

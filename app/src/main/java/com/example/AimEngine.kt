@@ -7,7 +7,7 @@ import kotlinx.coroutines.*
 import kotlin.math.*
 
 /**
- * Visual styling presets for the In-Game HUD Quick Customizer.
+ * Visual styling presets for the In-Game HUD.
  */
 enum class AimLineStyle(
     val label: String,
@@ -27,7 +27,7 @@ enum class AimLineStyle(
 enum class GameMode(val label: String, val badge: String, val description: String) {
     DISC_POOL("Disc Pool", "⚪ DISC POOL", "Direct Pot Focus • White/Black Puck Rush"),
     CLASSIC_CARROM("Classic Carrom", "👑 CLASSIC", "Queen Priority + Guaranteed Cover"),
-    FREESTYLE("Freestyle", "⭐ FREESTYLE", "Score Maximizer • High Value Targets (Q:50 / W:20 / B:10)")
+    FREESTYLE("Freestyle", "⭐ FREESTYLE", "Score Maximizer • High Value Targets")
 }
 
 enum class TargetFocusMode(val label: String, val badge: String) {
@@ -51,7 +51,7 @@ enum class LineRenderMode(val label: String, val badge: String) {
 }
 
 /**
- * High precision 2D Vector representation for Carrom physics calculations.
+ * 2D Vector mathematics representation for Carrom physics.
  */
 data class Vector2(val x: Float, val y: Float) {
     fun length(): Float = hypot(x, y)
@@ -71,7 +71,7 @@ data class Vector2(val x: Float, val y: Float) {
 }
 
 /**
- * Accurate Geometric Carrom Board Boundaries clamped to screen aspect ratio.
+ * Geometric Carrom Board Boundaries clamped to a 1:1 aspect square in the center of the display.
  */
 data class CarromBoardBounds(
     val boardSize: Float,
@@ -103,18 +103,33 @@ data class CarromBoardBounds(
 }
 
 /**
- * Board Vision Puck representation on the board grid.
+ * Board Vision Puck representation.
  */
+enum class PuckType { WHITE, BLACK, QUEEN, STRIKER }
+
 data class VisionPuck(
     val id: String,
     val position: PointF,
-    val type: String, // "QUEEN", "WHITE", "BLACK", "TARGET"
+    val type: String,
     val radius: Float = 24f,
     val confidence: Float = 0.98f
 )
 
 /**
- * Calibrated Board Vision Grid Matrix with Dynamic Aspect Ratio Auto-Calibration.
+ * Vision detection result from viewport frame scanner.
+ */
+data class DetectedBoardVisionResult(
+    val isPlayerTurn: Boolean,
+    val strikerPosition: PointF?,
+    val targetPuckPosition: PointF?,
+    val detectedPucks: List<VisionPuck> = emptyList(),
+    val targetPocket: PointF? = null,
+    val targetPocketName: String? = null,
+    val isVisionCalibrated: Boolean = true
+)
+
+/**
+ * Calibrated Board Vision Grid Matrix.
  */
 data class BoardVisionMatrix(
     val width: Float,
@@ -144,9 +159,6 @@ data class QueenCoverPlan(
     val planDescription: String = "Queen -> Cover 2-Shot Sequence Locked"
 )
 
-/**
- * Optimal horizontal striker baseline placement point.
- */
 data class BaselinePlacementSpot(
     val position: PointF,
     val winProbability: Int,
@@ -157,73 +169,6 @@ data class BaselinePlacementSpot(
     val spotLabel: String
 )
 
-/**
- * Comprehensive Shot Trajectory Model containing all calculated vector paths,
- * reflection nodes, deflection angles, and dynamic power parameters.
- */
-data class AimTrajectory(
-    val shotType: LineRenderMode,
-    val strikerPos: PointF,
-    val coinPos: PointF,
-    val secondaryCoinPos: PointF? = null,
-    val targetPocket: PointF,
-    val pocketName: String,
-    val ghostStrikerPos: PointF,              // Exact striker contact point on target puck
-    val directStrikeLine: List<PointF>,       // Striker -> Puck Contact (Primary Laser)
-    val coinToPocketLine: List<PointF>,       // Puck -> Pocket (Secondary Laser)
-    val bankShotLines: List<PointF> = emptyList(), // Wall-Bounce Physics (Cushion Rebound)
-    val strikerReboundLine: List<PointF> = emptyList(), // Post-collision Striker Deflection Ray
-    val kissShotLines: List<PointF> = emptyList(),      // Multi-coin combo deflection rays
-    val tangentLine: List<PointF>? = null,              // Tangent contact plane for cut shots
-    val backSliceRays: List<PointF>? = null,            // Striker rail bounce before coin impact
-    val cushionImpactPoints: List<PointF> = emptyList(),// Identified cushion nodes (C1, C2, C3)
-    val boardBounds: CarromBoardBounds? = null,
-    // 3-Body Chain Reaction Physics
-    val is3BodyCombo: Boolean = false,
-    val comboPuckAPos: PointF? = null,
-    val comboPuckBPos: PointF? = null,
-    val ghostPuckAPos: PointF? = null,
-    val comboEnergyTransferPercent: Int = 100,
-    val comboPuckADeflectionLine: List<PointF> = emptyList(),
-    // Pocket Entry Margin
-    val pocketEntryMarginDeg: Float = 14.5f,
-    val pocketMouthLeft: PointF? = null,
-    val pocketMouthRight: PointF? = null,
-    val isWithinToleranceMargin: Boolean = true,
-    val toleranceLabel: String = "±14.5° Safe Pocket Margin",
-    // Blocker Avoidance & Auto-Reroute
-    val isAutoRerouted: Boolean = false,
-    val blockedObstaclePos: PointF? = null,
-    val obstructedDirectLine: List<PointF> = emptyList(),
-    val rerouteExplanation: String = "",
-    // Striker Baseline Position Guide
-    val baselineSpots: List<BaselinePlacementSpot> = emptyList(),
-    val optimalBaselineSpot: BaselinePlacementSpot? = null,
-    val baselineY: Float = 0f,
-    val baselineStartX: Float = 0f,
-    val baselineEndX: Float = 0f,
-    val angleDegrees: Float,
-    val cutAngleDegrees: Float,
-    val isPocketLocked: Boolean,
-    val lockScorePercent: Int = 98,
-    val isGuaranteedWin: Boolean = false,
-    val recommendedPower: Int = 85,
-    val powerLabel: String = "Heavy Strike (85%)",
-    val dynamicPullbackDistancePx: Float = 160f,
-    val totalShotDistancePx: Float = 750f,
-    val isObstacleAvoided: Boolean = false,
-    val obstacleCount: Int = 0,
-    val isQueenShot: Boolean = false,
-    val queenCoverPlan: QueenCoverPlan? = null,
-    val centerTargetResult: CenterTargetVectorResult? = null,
-    val gameModeBadge: String = "⚪ DISC POOL",
-    val shotTitle: String = "Direct Pot Locked",
-    val strategyNotes: String = "Zero-Miss Elastic Collision Solved"
-)
-
-/**
- * Center-Target Precision Vector Kinematics & Friction Deceleration Model.
- */
 data class CenterTargetVectorResult(
     val initialSpeedPxPerSec: Float,
     val impulseVector: Vector2,
@@ -240,85 +185,158 @@ data class CenterTargetVectorResult(
 )
 
 /**
- * Configuration options for the AI Aim Line Engine.
+ * Pure 2D Ghost-Ball Trajectory Result.
+ */
+data class AimTrajectory(
+    val shotType: LineRenderMode = LineRenderMode.DIRECT,
+    val strikerPos: PointF,
+    val coinPos: PointF,
+    val secondaryCoinPos: PointF? = null,
+    val targetPocket: PointF,
+    val pocketName: String,
+    val ghostStrikerPos: PointF,              // Ghost-Ball Impact Point (G)
+    val directStrikeLine: List<PointF>,       // Line 1: S -> G (Striker Line)
+    val coinToPocketLine: List<PointF>,       // Line 2: P -> K (Puck Line)
+    val bankShotLines: List<PointF> = emptyList(),
+    val strikerReboundLine: List<PointF> = emptyList(),
+    val kissShotLines: List<PointF> = emptyList(),
+    val tangentLine: List<PointF>? = null,
+    val backSliceRays: List<PointF>? = null,
+    val cushionImpactPoints: List<PointF> = emptyList(),
+    val boardBounds: CarromBoardBounds? = null,
+    val is3BodyCombo: Boolean = false,
+    val comboPuckAPos: PointF? = null,
+    val comboPuckBPos: PointF? = null,
+    val ghostPuckAPos: PointF? = null,
+    val comboEnergyTransferPercent: Int = 100,
+    val comboPuckADeflectionLine: List<PointF> = emptyList(),
+    val pocketEntryMarginDeg: Float = 14.5f,
+    val pocketMouthLeft: PointF? = null,
+    val pocketMouthRight: PointF? = null,
+    val isWithinToleranceMargin: Boolean = true,
+    val toleranceLabel: String = "Direct Pot Locked",
+    val isAutoRerouted: Boolean = false,
+    val blockedObstaclePos: PointF? = null,
+    val obstructedDirectLine: List<PointF> = emptyList(),
+    val rerouteExplanation: String = "",
+    val baselineSpots: List<BaselinePlacementSpot> = emptyList(),
+    val optimalBaselineSpot: BaselinePlacementSpot? = null,
+    val baselineY: Float = 0f,
+    val baselineStartX: Float = 0f,
+    val baselineEndX: Float = 0f,
+    val angleDegrees: Float = 0f,
+    val cutAngleDegrees: Float = 0f,
+    val isPocketLocked: Boolean = true,
+    val lockScorePercent: Int = 99,
+    val isGuaranteedWin: Boolean = true,
+    val recommendedPower: Int = 50,
+    val powerLabel: String = "Medium (50%)",
+    val dynamicPullbackDistancePx: Float = 90f,
+    val totalShotDistancePx: Float = 400f,
+    val isObstacleAvoided: Boolean = true,
+    val obstacleCount: Int = 0,
+    val isQueenShot: Boolean = false,
+    val queenCoverPlan: QueenCoverPlan? = null,
+    val centerTargetResult: CenterTargetVectorResult? = null,
+    val gameModeBadge: String = "⚪ DISC POOL",
+    val shotTitle: String = "Direct Pot Locked",
+    val strategyNotes: String = "Deterministic Ghost-Ball Solved"
+)
+
+/**
+ * Engine configuration data class.
  */
 data class AimEngineConfig(
     val isEnabled: Boolean = true,
     val gameMode: GameMode = GameMode.DISC_POOL,
-    val lineMode: LineRenderMode = LineRenderMode.LASER_PRO,
+    val lineMode: LineRenderMode = LineRenderMode.DIRECT,
     val lineStyle: AimLineStyle = AimLineStyle.LASER_GLOW,
     val targetFocusMode: TargetFocusMode = TargetFocusMode.EASIEST_PUCK,
-    val showBaselineGuide: Boolean = true,
+    val showBaselineGuide: Boolean = false,
     val isCenterTargetGuideEnabled: Boolean = false,
     val isAutoPlayEnabled: Boolean = false,
     val isQueenPriorityEnabled: Boolean = true,
-    val isDualReboundEnabled: Boolean = true,
-    val is3CushionEnabled: Boolean = true,
+    val isDualReboundEnabled: Boolean = false,
+    val is3CushionEnabled: Boolean = false,
     val isAutoPocketPredictionEnabled: Boolean = true,
     val isStealthMode: Boolean = true,
     val is120FpsEnabled: Boolean = true,
     val isPerformanceSavingActive: Boolean = false,
-    val laserColor: Int = Color.parseColor("#00E5FF"), // Neon Cyan default
-    val puckColor: Int = Color.parseColor("#FFD700"),  // Gold default
-    val bankColor: Int = Color.parseColor("#FF1744"),  // Crimson Red default
-    val strokeWidth: Float = 5.5f,
-    val showAngleHud: Boolean = true,
+    val laserColor: Int = Color.parseColor("#00E5FF"), // Cyan Laser default
+    val puckColor: Int = Color.parseColor("#00E676"),  // Yellow/Green default
+    val bankColor: Int = Color.parseColor("#FF1744"),
+    val strokeWidth: Float = 3.0f,
+    val showAngleHud: Boolean = false,
     val isDotted: Boolean = false,
-    val strikerRadius: Float = 34f,
-    val coinRadius: Float = 24f,
-    val pocketRadius: Float = 38f,
-    val maxCushions: Int = 3
+    val strikerRadius: Float = 32f,
+    val coinRadius: Float = 22f,
+    val pocketRadius: Float = 36f,
+    val maxCushions: Int = 0
 )
 
 /**
- * High-Precision Physics Engine for Carrom Trajectories:
- * - Real-time striker tracking originating strictly from striker center on the baseline
- * - Strict Carrom board boundary clamping (preventing any lines outside wooden frame)
- * - 2D raycast elastic collision reflections (Striker -> Puck -> Pocket)
- * - Accessible quadrant target prioritization
+ * Pure, deterministic 2D Ghost-Ball Vector Raycasting & Real-Time Pixel Scanner Engine.
+ * NO mock values, NO random points, NO network fallback.
  */
 object AimEngine {
 
+    // Normalized Pocket Coordinates for 4 corners of the 1:1 board square
+    val NORMALIZED_POCKET_TOP_LEFT = PointF(0.10f, 0.10f)
+    val NORMALIZED_POCKET_TOP_RIGHT = PointF(0.90f, 0.10f)
+    val NORMALIZED_POCKET_BOTTOM_LEFT = PointF(0.10f, 0.90f)
+    val NORMALIZED_POCKET_BOTTOM_RIGHT = PointF(0.90f, 0.90f)
+
+    var isAutoPlayActive: Boolean = false
+    var isFastModeActive: Boolean = true
+    var isCenterBullseyeActive: Boolean = false
+
+    var lineColor: Int = Color.parseColor("#00E5FF")
+    var laserThickness: Float = 3.0f
+
     /**
-     * Calculates calibrated carrom board boundaries based on screen aspect ratio.
+     * Board Calibration:
+     * Board boundary strictly clamped to a 1:1 aspect square in the center of the display.
      */
     fun calculateBoardBounds(width: Float, height: Float): CarromBoardBounds {
-        val w = if (width > 0) width else 1080f
-        val h = if (height > 0) height else 2400f
+        val w = if (width > 0f) width else 1080f
+        val h = if (height > 0f) height else 2400f
 
-        // Carrom board in Carrom Disc Pool is a centered square occupying almost full screen width
-        val boardSize = min(w * 0.96f, h * 0.62f)
-        val centerX = w / 2f
-        val centerY = h / 2f
+        val boardSize = min(w, h)
+        val boardLeft = (w - boardSize) / 2f
+        val boardTop = (h - boardSize) / 2f
+        val boardRight = boardLeft + boardSize
+        val boardBottom = boardTop + boardSize
 
-        val boardLeft = centerX - boardSize / 2f
-        val boardRight = centerX + boardSize / 2f
-        val boardTop = centerY - boardSize / 2f
-        val boardBottom = centerY + boardSize / 2f
-
-        // Wooden cushion frame inner margin (~6.2% of board size)
-        val cushionMargin = boardSize * 0.062f
+        val cushionMargin = boardSize * 0.05f
         val cushionLeft = boardLeft + cushionMargin
         val cushionRight = boardRight - cushionMargin
         val cushionTop = boardTop + cushionMargin
         val cushionBottom = boardBottom - cushionMargin
 
-        // 4 Corner Pockets centered on the 4 corner openings
-        val pocketInset = boardSize * 0.070f
-        val pocketRadius = (boardSize * 0.048f).coerceIn(32f, 44f)
+        val pocketRadius = boardSize * 0.045f
 
         val pockets = mapOf(
-            "Top-Left" to PointF(boardLeft + pocketInset, boardTop + pocketInset),
-            "Top-Right" to PointF(boardRight - pocketInset, boardTop + pocketInset),
-            "Bottom-Left" to PointF(boardLeft + pocketInset, boardBottom - pocketInset),
-            "Bottom-Right" to PointF(boardRight - pocketInset, boardBottom - pocketInset)
+            "Top-Left" to PointF(
+                boardLeft + NORMALIZED_POCKET_TOP_LEFT.x * boardSize,
+                boardTop + NORMALIZED_POCKET_TOP_LEFT.y * boardSize
+            ),
+            "Top-Right" to PointF(
+                boardLeft + NORMALIZED_POCKET_TOP_RIGHT.x * boardSize,
+                boardTop + NORMALIZED_POCKET_TOP_RIGHT.y * boardSize
+            ),
+            "Bottom-Left" to PointF(
+                boardLeft + NORMALIZED_POCKET_BOTTOM_LEFT.x * boardSize,
+                boardTop + NORMALIZED_POCKET_BOTTOM_LEFT.y * boardSize
+            ),
+            "Bottom-Right" to PointF(
+                boardLeft + NORMALIZED_POCKET_BOTTOM_RIGHT.x * boardSize,
+                boardTop + NORMALIZED_POCKET_BOTTOM_RIGHT.y * boardSize
+            )
         )
 
-        // Player's horizontal bottom baseline:
-        // Positioned in the lower quadrant of the board
-        val baselineY = cushionBottom - (boardSize * 0.165f)
-        val baselineStartX = cushionLeft + (boardSize * 0.16f)
-        val baselineEndX = cushionRight - (boardSize * 0.16f)
+        val baselineY = boardTop + boardSize * 0.77f // Centered in baseline corridor (72% to 82%)
+        val baselineStartX = boardLeft + boardSize * 0.20f
+        val baselineEndX = boardRight - boardSize * 0.20f
 
         return CarromBoardBounds(
             boardSize = boardSize,
@@ -335,62 +353,134 @@ object AimEngine {
             baselineEndX = baselineEndX,
             pockets = pockets,
             pocketRadius = pocketRadius,
-            boardCenter = PointF(centerX, centerY)
+            boardCenter = PointF((boardLeft + boardRight) / 2f, (boardTop + boardBottom) / 2f)
         )
     }
 
     /**
-     * Creates dynamic BoardVisionMatrix with geometric board bounds and detected pucks.
+     * True "Ghost-Ball" Trajectory Math:
+     * Given Striker Position (S) and Target Puck Position (P):
+     * a) Identify nearest pocket (K).
+     * b) Calculate normalized pocket vector: V_pocket = normalize(K - P).
+     * c) Calculate Ghost-Ball Impact Point (G): G = P - (V_pocket * puck_diameter).
+     * d) Striker aim vector is directed strictly from S to G.
+     * e) Calculate post-impact puck trajectory strictly from P into K.
      */
-    fun createBoardVisionMatrix(
-        boardWidth: Float,
-        boardHeight: Float,
-        activeStriker: PointF,
-        activeCoin: PointF
-    ): BoardVisionMatrix {
-        val w = if (boardWidth > 0) boardWidth else 1080f
-        val h = if (boardHeight > 0) boardHeight else 2400f
-        val aspectRatio = h / w
+    fun calculateGhostBallTrajectory(
+        striker: PointF,
+        puck: PointF,
+        bounds: CarromBoardBounds,
+        config: AimEngineConfig = AimEngineConfig(),
+        overridePocket: PointF? = null,
+        overridePocketName: String? = null
+    ): AimTrajectory {
+        // a) Identify target pocket (K)
+        var nearestPocketName = overridePocketName ?: "Top-Left"
+        var nearestPocket = overridePocket ?: (bounds.pockets["Top-Left"] ?: PointF(
+            bounds.boardLeft + NORMALIZED_POCKET_TOP_LEFT.x * bounds.boardSize,
+            bounds.boardTop + NORMALIZED_POCKET_TOP_LEFT.y * bounds.boardSize
+        ))
 
-        val bounds = calculateBoardBounds(w, h)
-        val center = bounds.boardCenter
-
-        val screenType = when {
-            aspectRatio > 2.15f -> "20:9 / 19.5:9 Ultra-Tall"
-            aspectRatio > 1.95f -> "18:9 Modern Smartphone"
-            aspectRatio > 1.70f -> "16:9 Standard Ratio"
-            else -> "Tablet / Square Canvas"
+        if (overridePocket == null) {
+            var minDistance = Float.MAX_VALUE
+            for ((name, pocketPt) in bounds.pockets) {
+                val dist = hypot(pocketPt.x - puck.x, pocketPt.y - puck.y)
+                if (dist < minDistance) {
+                    minDistance = dist
+                    nearestPocket = pocketPt
+                    nearestPocketName = name
+                }
+            }
         }
 
-        val queenPuck = VisionPuck("QUEEN", PointF(center.x, center.y), "QUEEN", radius = 24f)
-        val detectedPucks = listOf(
-            queenPuck,
-            VisionPuck("WHITE_1", PointF(center.x - 70f, center.y - 60f), "WHITE", radius = 23f),
-            VisionPuck("BLACK_1", PointF(center.x + 65f, center.y - 50f), "BLACK", radius = 23f),
-            VisionPuck("WHITE_2", PointF(center.x - 55f, center.y + 75f), "WHITE", radius = 23f),
-            VisionPuck("BLACK_2", PointF(center.x + 60f, center.y + 65f), "BLACK", radius = 23f),
-            VisionPuck("TARGET", bounds.clampToCushions(activeCoin), "TARGET", radius = 24f)
+        // b) Calculate normalized pocket vector: V_pocket = normalize(K - P)
+        val kx = nearestPocket.x
+        val ky = nearestPocket.y
+        val px = puck.x
+        val py = puck.y
+
+        val dPx = kx - px
+        val dPy = ky - py
+        val distPuckToPocket = hypot(dPx, dPy)
+
+        val vPocketX: Float
+        val vPocketY: Float
+        if (distPuckToPocket > 0.0001f) {
+            vPocketX = dPx / distPuckToPocket
+            vPocketY = dPy / distPuckToPocket
+        } else {
+            vPocketX = 0f
+            vPocketY = -1f
+        }
+
+        // c) Calculate Ghost-Ball Impact Point (G): G = P - (V_pocket * puck_diameter)
+        val puckRadius = if (config.coinRadius > 0f) config.coinRadius else bounds.boardSize * 0.032f
+        val puckDiameter = puckRadius * 2f
+
+        val ghostX = px - (vPocketX * puckDiameter)
+        val ghostY = py - (vPocketY * puckDiameter)
+        val ghostPoint = PointF(ghostX, ghostY)
+
+        // d) Striker aim vector is directed strictly from S to G
+        val directStrikeLine = listOf(
+            PointF(striker.x, striker.y),
+            ghostPoint
         )
 
-        return BoardVisionMatrix(
-            width = w,
-            height = h,
-            aspectRatio = aspectRatio,
-            screenType = screenType,
-            bounds = bounds,
-            pockets = bounds.pockets,
-            detectedPucks = detectedPucks,
-            queenPuck = queenPuck
+        // e) Post-impact puck trajectory strictly from P into K (stops immediately at K)
+        val coinToPocketLine = listOf(
+            PointF(puck.x, puck.y),
+            PointF(nearestPocket.x, nearestPocket.y)
+        )
+
+        val dSx = ghostX - striker.x
+        val dSy = ghostY - striker.y
+        val distStrikerToGhost = hypot(dSx, dSy)
+        val shotAngleDeg = (Math.toDegrees(atan2(dSy.toDouble(), dSx.toDouble())).toFloat() + 360f) % 360f
+
+        val puckToPocketAngleDeg = (Math.toDegrees(atan2(dPy.toDouble(), dPx.toDouble())).toFloat() + 360f) % 360f
+        val cutAngleDeg = abs(shotAngleDeg - puckToPocketAngleDeg)
+
+        val totalDistance = distStrikerToGhost + distPuckToPocket
+        val (powerPercent, powerLabel, pullbackPx) = computeDynamicStrokePower(
+            striker = striker,
+            ghost = ghostPoint,
+            coin = puck,
+            pocket = nearestPocket,
+            cushions = 0
+        )
+
+        return AimTrajectory(
+            shotType = LineRenderMode.DIRECT,
+            strikerPos = striker,
+            coinPos = puck,
+            targetPocket = nearestPocket,
+            pocketName = nearestPocketName,
+            ghostStrikerPos = ghostPoint,
+            directStrikeLine = directStrikeLine,
+            coinToPocketLine = coinToPocketLine,
+            boardBounds = bounds,
+            angleDegrees = shotAngleDeg,
+            cutAngleDegrees = cutAngleDeg,
+            isPocketLocked = true,
+            recommendedPower = powerPercent,
+            powerLabel = powerLabel,
+            dynamicPullbackDistancePx = pullbackPx,
+            totalShotDistancePx = totalDistance,
+            shotTitle = "Ghost-Ball Direct Pot",
+            strategyNotes = "Nearest pocket $nearestPocketName locked"
         )
     }
 
-    /**
-     * Computes dynamic stroke power, pullback length, and category label.
-     * Implements dynamic shot power scaling based on distance:
-     * - Short distance to pocket (<200px): Low power (35-50%) for safe potting.
-     * - Medium distance (200px - 500px): Medium power (51-84%).
-     * - Long cushion bank/rebound (>500px): High power (85-100%).
-     */
+    fun calculateTrajectory(
+        striker: PointF,
+        coin: PointF,
+        bounds: CarromBoardBounds,
+        config: AimEngineConfig = AimEngineConfig()
+    ): AimTrajectory {
+        return calculateGhostBallTrajectory(striker, coin, bounds, config)
+    }
+
     fun computeDynamicStrokePower(
         striker: PointF,
         ghost: PointF,
@@ -403,19 +493,15 @@ object AimEngine {
         val totalDistance = distStrikerToGhost + distPuckToPocket + (cushions * 240f)
 
         val powerPercent = when {
-            cushions >= 2 -> (85 + (cushions * 5)).coerceIn(85, 100)
-            cushions == 1 || totalDistance >= 500f -> {
-                // Long cushion bank or long distance (>500px): High power (85-100%)
+            cushions >= 1 || totalDistance >= 500f -> {
                 val progress = ((totalDistance - 500f) / 500f).coerceIn(0f, 1f)
                 (85 + (progress * 15f)).toInt().coerceIn(85, 100)
             }
-            distPuckToPocket < 200f && cushions == 0 && distStrikerToGhost < 300f -> {
-                // Short distance to pocket (<200px): Low power (35-50%) for safe potting
+            distPuckToPocket < 200f && distStrikerToGhost < 300f -> {
                 val progress = (distPuckToPocket / 200f).coerceIn(0f, 1f)
                 (35 + (progress * 15f)).toInt().coerceIn(35, 50)
             }
             else -> {
-                // Medium distance: (51-84%)
                 val progress = ((totalDistance - 200f) / 300f).coerceIn(0f, 1f)
                 (51 + (progress * 33f)).toInt().coerceIn(51, 84)
             }
@@ -433,1130 +519,437 @@ object AimEngine {
     }
 
     /**
-     * Primary entry point for calculating shot trajectories.
-     * All calculations strictly respect the carrom board bounds.
+     * Inverted Slingshot Math Parameters:
+     * - Theta: locked Ghost-Ball trajectory angle.
+     * - PullAngle: Theta + 180 degrees (strictly inverted).
+     * - Pull distance dynamically computed from target puck distance:
+     *     Short pot (< 250px): Pull back 45-60px (Soft touch).
+     *     Long bank/rebound (> 500px): Pull back 110-135px (Full power).
+     * - Drag End Point:
+     *     EndX = Xs + (pullDistance * cos(PullAngle))
+     *     EndY = Ys + (pullDistance * sin(PullAngle))
      */
-    fun calculateTrajectory(
-        striker: PointF,
-        coin: PointF,
-        boardWidth: Float,
-        boardHeight: Float,
-        config: AimEngineConfig
-    ): AimTrajectory {
-        val visionMatrix = createBoardVisionMatrix(boardWidth, boardHeight, striker, coin)
-        val bounds = visionMatrix.bounds
-        val pockets = bounds.pockets.map { Pair(it.key, it.value) }
+    data class SlingshotAutoStrikeParameters(
+        val forwardThetaDeg: Float,
+        val pullAngleDeg: Float,
+        val pullDistancePx: Float,
+        val startPoint: PointF,
+        val endPoint: PointF,
+        val targetPuckDistPx: Float
+    )
 
-        // Ensure striker is clamped strictly to the bottom baseline
-        val clampedStrikerX = striker.x.coerceIn(bounds.baselineStartX, bounds.baselineEndX)
-        val clampedStrikerY = bounds.baselineY
-        val strictStriker = PointF(clampedStrikerX, clampedStrikerY)
+    fun calculateSlingshotShotParameters(
+        strikerPos: PointF,
+        ghostPoint: PointF,
+        targetPuckPos: PointF
+    ): SlingshotAutoStrikeParameters {
+        val dx = ghostPoint.x - strikerPos.x
+        val dy = ghostPoint.y - strikerPos.y
+        val forwardThetaDeg = (Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 360f) % 360f
 
-        // Ensure coin is clamped inside cushion boundaries
-        val strictCoin = bounds.clampToCushions(coin)
+        val pullAngleDeg = (forwardThetaDeg + 180f) % 360f
+        val pullAngleRad = Math.toRadians(pullAngleDeg.toDouble())
 
-        val detectedPucks = visionMatrix.detectedPucks
-        val obstacles = detectedPucks
-            .filter { it.type != "TARGET" && hypot(it.position.x - strictCoin.x, it.position.y - strictCoin.y) > 32f }
-            .map { bounds.clampToCushions(it.position) }
+        val targetPuckDist = hypot(targetPuckPos.x - strikerPos.x, targetPuckPos.y - strikerPos.y)
 
-        // Prioritize accessible pucks on the player's side/quadrants
-        val effectiveCoin = when (config.gameMode) {
-            GameMode.CLASSIC_CARROM -> {
-                visionMatrix.queenPuck?.position?.let { bounds.clampToCushions(it) } ?: strictCoin
+        val pullDistance = when {
+            targetPuckDist < 250f -> {
+                val factor = (targetPuckDist / 250f).coerceIn(0f, 1f)
+                45f + (factor * 15f) // 45-60px
             }
-            GameMode.FREESTYLE -> {
-                val candidates = detectedPucks.filter { it.type in listOf("QUEEN", "WHITE", "BLACK", "TARGET") }
-                candidates.maxByOrNull { puck ->
-                    val pointValue = when (puck.type) {
-                        "QUEEN" -> 50
-                        "WHITE" -> 20
-                        "BLACK" -> 10
-                        else -> 15
+            targetPuckDist > 500f -> {
+                val factor = ((targetPuckDist - 500f) / 500f).coerceIn(0f, 1f)
+                110f + (factor * 25f) // 110-135px
+            }
+            else -> {
+                val factor = ((targetPuckDist - 250f) / 250f).coerceIn(0f, 1f)
+                60f + (factor * 50f) // 60-110px
+            }
+        }
+
+        val endX = (strikerPos.x + (pullDistance * cos(pullAngleRad))).toFloat()
+        val endY = (strikerPos.y + (pullDistance * sin(pullAngleRad))).toFloat()
+
+        return SlingshotAutoStrikeParameters(
+            forwardThetaDeg = forwardThetaDeg,
+            pullAngleDeg = pullAngleDeg,
+            pullDistancePx = pullDistance,
+            startPoint = PointF(strikerPos.x, strikerPos.y),
+            endPoint = PointF(endX, endY),
+            targetPuckDistPx = targetPuckDist
+        )
+    }
+
+    // =========================================================================
+    // REAL-TIME FRAME PIXEL SCANNER (HSV-BASED, DETERMINISTIC)
+    // =========================================================================
+
+    /**
+     * Scans direct raw int[] pixel buffer strictly mapped to the 1:1 Carrom Board square.
+     *
+     * @param boardPixels Array of packed ARGB/RGBA pixels of size [boardSide x boardSide]
+     * @param boardSide Dimension of the cropped 1:1 square
+     * @param boardBounds Coordinate mapping bounds on actual screen
+     */
+    fun scanBoardPixelsDirect(
+        boardPixels: IntArray,
+        boardSide: Int,
+        boardBounds: CarromBoardBounds
+    ): DetectedBoardVisionResult {
+        if (boardSide < 100 || boardPixels.size < boardSide * boardSide) {
+            return DetectedBoardVisionResult(isPlayerTurn = false, strikerPosition = null, targetPuckPosition = null)
+        }
+
+        val hsv = FloatArray(3)
+
+        // ---------------------------------------------------------------------
+        // 1. DETERMINISTIC STRIKER BASELINE SCAN
+        // Corridor: Y: 72% to 82% of board height, X: 15% to 85% of board width
+        // ---------------------------------------------------------------------
+        val baselineStartY = (boardSide * 0.72f).toInt().coerceIn(0, boardSide - 1)
+        val baselineEndY = (boardSide * 0.82f).toInt().coerceIn(0, boardSide - 1)
+        val baselineStartX = (boardSide * 0.15f).toInt().coerceIn(0, boardSide - 1)
+        val baselineEndX = (boardSide * 0.85f).toInt().coerceIn(0, boardSide - 1)
+
+        val expectedStrikerRadiusPx = boardSide * 0.035f // ~32-38dp proportional to board
+        val minStrikerRadius = (expectedStrikerRadiusPx * 0.75f).coerceAtLeast(8f)
+        val maxStrikerRadius = (expectedStrikerRadiusPx * 1.35f).coerceAtLeast(14f)
+
+        var bestStrikerScore = 0f
+        var detectedStrikerGridX = -1f
+        var detectedStrikerGridY = -1f
+
+        // Sample along baseline corridor with 3px step for performance & sub-pixel precision
+        val step = max(2, (boardSide / 160))
+        for (y in baselineStartY..baselineEndY step step) {
+            for (x in baselineStartX..baselineEndX step step) {
+                val pixel = boardPixels[y * boardSide + x]
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+                Color.RGBToHSV(r, g, b, hsv)
+
+                // High-luminance rim or distinct striker core: V > 0.75 or strong saturation contrast
+                if (hsv[2] > 0.75f || (hsv[1] > 0.55f && hsv[2] > 0.60f)) {
+                    // Test radial symmetry around (x, y) for striker diameter
+                    val symmetryScore = evaluateRadialRing(
+                        boardPixels, boardSide, x, y,
+                        minStrikerRadius, maxStrikerRadius, hsv
+                    )
+                    if (symmetryScore > bestStrikerScore && symmetryScore >= 0.45f) {
+                        bestStrikerScore = symmetryScore
+                        detectedStrikerGridX = x.toFloat()
+                        detectedStrikerGridY = y.toFloat()
                     }
-                    val dist = hypot(puck.position.x - strictStriker.x, puck.position.y - strictStriker.y)
-                    pointValue * 100f - dist
-                }?.position?.let { bounds.clampToCushions(it) } ?: strictCoin
+                }
             }
-            GameMode.DISC_POOL -> {
-                when (config.targetFocusMode) {
-                    TargetFocusMode.QUEEN -> visionMatrix.queenPuck?.position?.let { bounds.clampToCushions(it) } ?: strictCoin
-                    TargetFocusMode.EASIEST_PUCK -> {
-                        // 100% Deterministic on-device raycasting: Lock target priority on easiest playable puck heading towards nearest pocket
-                        findEasiestPlayablePuck(strictStriker, detectedPucks, pockets, bounds, config)
+        }
+
+        // If no valid striker pattern is found in the baseline corridor, immediately set isPlayerTurn = false
+        if (bestStrikerScore < 0.45f || detectedStrikerGridX < 0f) {
+            return DetectedBoardVisionResult(
+                isPlayerTurn = false,
+                strikerPosition = null,
+                targetPuckPosition = null,
+                detectedPucks = emptyList(),
+                isVisionCalibrated = true
+            )
+        }
+
+        // Convert grid coordinate to screen coordinate
+        val scaleToScreen = boardBounds.boardSize / boardSide.toFloat()
+        val strikerScreenPos = PointF(
+            boardBounds.boardLeft + (detectedStrikerGridX * scaleToScreen),
+            boardBounds.boardTop + (detectedStrikerGridY * scaleToScreen)
+        )
+
+        // ---------------------------------------------------------------------
+        // 2. PUCK CLUSTERING & CLASSIFICATION INSIDE PLAYING AREA
+        // ---------------------------------------------------------------------
+        val puckRadiusPx = boardSide * 0.026f // ~26-30dp
+        val playMinX = (boardSide * 0.08f).toInt()
+        val playMaxX = (boardSide * 0.92f).toInt()
+        val playMinY = (boardSide * 0.08f).toInt()
+        val playMaxY = (boardSide * 0.88f).toInt()
+
+        val puckCandidates = mutableListOf<PuckCandidate>()
+        val puckStep = max(3, (boardSide / 120))
+
+        for (y in playMinY..playMaxY step puckStep) {
+            for (x in playMinX..playMaxX step puckStep) {
+                // Do not register the striker as a target puck
+                val dToStriker = hypot(x - detectedStrikerGridX, y - detectedStrikerGridY)
+                if (dToStriker < expectedStrikerRadiusPx * 1.5f) continue
+
+                val pixel = boardPixels[y * boardSide + x]
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+                Color.RGBToHSV(r, g, b, hsv)
+
+                val hue = hsv[0]
+                val sat = hsv[1]
+                val value = hsv[2]
+
+                // Match classification:
+                // a) Queen: Hue within 350°-15° pure red band, Saturation > 0.70
+                // b) White Pucks: High Value V > 0.85, Low Saturation S < 0.15
+                // c) Black Pucks: Low Value V < 0.20
+                val puckType: PuckType? = when {
+                    (hue >= 345f || hue <= 15f) && sat > 0.65f && value > 0.40f -> PuckType.QUEEN
+                    value > 0.82f && sat < 0.22f -> PuckType.WHITE
+                    value < 0.22f -> PuckType.BLACK
+                    else -> null
+                }
+
+                if (puckType != null) {
+                    val clusterWeight = verifyPuckCluster(boardPixels, boardSide, x, y, puckRadiusPx, puckType)
+                    if (clusterWeight >= 0.45f) {
+                        // Avoid duplicates in the candidate list
+                        val existing = puckCandidates.firstOrNull {
+                            hypot(it.gridX - x, it.gridY - y) < puckRadiusPx * 1.2f
+                        }
+                        if (existing == null) {
+                            puckCandidates.add(PuckCandidate(x.toFloat(), y.toFloat(), puckType, clusterWeight))
+                        } else if (clusterWeight > existing.weight) {
+                            existing.gridX = (existing.gridX + x) / 2f
+                            existing.gridY = (existing.gridY + y) / 2f
+                            existing.weight = max(existing.weight, clusterWeight)
+                        }
                     }
-                    TargetFocusMode.COMBO_3BODY -> strictCoin
-                    TargetFocusMode.BANK_SHOT -> strictCoin
                 }
             }
         }
 
-        val baseTrajectory = when (config.lineMode) {
-            LineRenderMode.DIRECT -> calculateDirectPot(strictStriker, effectiveCoin, pockets, bounds, config, obstacles)
-            LineRenderMode.BANK_1_CUSHION -> calculateBankShot(strictStriker, effectiveCoin, pockets, bounds, config, 1, obstacles)
-            LineRenderMode.BANK_2_CUSHION -> calculateBankShot(strictStriker, effectiveCoin, pockets, bounds, config, 2, obstacles)
-            LineRenderMode.BANK_3_CUSHION -> calculateBankShot(strictStriker, effectiveCoin, pockets, bounds, config, 3, obstacles)
-            LineRenderMode.KISS_SHOT -> calculateKissShot(strictStriker, effectiveCoin, pockets, bounds, config)
-            LineRenderMode.COMBO_3_BODY -> {
-                val puckB = detectedPucks.firstOrNull { it.id != "QUEEN" && hypot(it.position.x - effectiveCoin.x, it.position.y - effectiveCoin.y) > 35f }?.position
-                    ?: PointF(bounds.boardCenter.x + 60f, bounds.boardCenter.y - 50f)
-                calculate3BodyComboShot(strictStriker, effectiveCoin, bounds.clampToCushions(puckB), pockets, bounds, config)
-            }
-            LineRenderMode.CUT_SHOT -> calculateCutShot(strictStriker, effectiveCoin, pockets, bounds, config, obstacles)
-            LineRenderMode.BACK_SLICE -> calculateBackSliceRebound(strictStriker, effectiveCoin, pockets, bounds, config, obstacles)
-            LineRenderMode.BREAK_SHOT -> calculateBreakShot(strictStriker, effectiveCoin, pockets, bounds, config, visionMatrix)
-            LineRenderMode.LASER_PRO -> evaluateOptimalMasterShot(strictStriker, effectiveCoin, pockets, bounds, config, obstacles, visionMatrix)
+        // Convert puck candidates to VisionPuck list
+        val detectedVisionPucks = puckCandidates.mapIndexed { index, cand ->
+            VisionPuck(
+                id = "${cand.type.name}_$index",
+                position = PointF(
+                    boardBounds.boardLeft + (cand.gridX * scaleToScreen),
+                    boardBounds.boardTop + (cand.gridY * scaleToScreen)
+                ),
+                type = cand.type.name,
+                radius = puckRadiusPx * scaleToScreen,
+                confidence = cand.weight
+            )
         }
 
-        // Calculate horizontal striker baseline placement spots
-        val baselineData = calculateBaselinePlacementGuide(effectiveCoin, pockets, bounds, config)
+        // ---------------------------------------------------------------------
+        // 3. AUTO-SELECT OPTIMAL TARGET PUCK
+        // Choose puck with clearest unobstructed straight path to any 4 pockets
+        // ---------------------------------------------------------------------
+        var optimalTargetPuck: PointF? = null
+        var selectedPocket: PointF? = null
+        var selectedPocketName: String? = null
+        var bestShotScore = -Float.MAX_VALUE
 
-        var finalTrajectory = baseTrajectory.copy(
-            boardBounds = bounds,
-            gameModeBadge = config.gameMode.badge,
-            baselineSpots = baselineData.first,
-            optimalBaselineSpot = baselineData.second,
-            baselineY = bounds.baselineY,
-            baselineStartX = bounds.baselineStartX,
-            baselineEndX = bounds.baselineEndX
-        )
-
-        // Queen + Cover plan if queen is present
-        if ((config.gameMode == GameMode.CLASSIC_CARROM || config.isQueenPriorityEnabled) && visionMatrix.queenPuck != null) {
-            val queenPos = bounds.clampToCushions(visionMatrix.queenPuck.position)
-            val queenBestPocket = findOptimalPocket(strictStriker, queenPos, pockets)
-            val vQP = (Vector2.fromPointF(queenBestPocket.second) - Vector2.fromPointF(queenPos)).normalized()
-            val queenGhost = bounds.clampToCushions(
-                (Vector2.fromPointF(queenPos) - vQP * (config.strikerRadius + config.coinRadius)).toPointF()
+        for (cand in puckCandidates) {
+            val puckScreenPos = PointF(
+                boardBounds.boardLeft + (cand.gridX * scaleToScreen),
+                boardBounds.boardTop + (cand.gridY * scaleToScreen)
             )
 
-            val coverCandidate = visionMatrix.detectedPucks.firstOrNull { it.type == "WHITE" }
-            if (coverCandidate != null) {
-                val coverPos = bounds.clampToCushions(coverCandidate.position)
-                val coverPocket = findOptimalPocket(queenGhost, coverPos, pockets)
-                val queenCoverPlan = QueenCoverPlan(
-                    queenPosition = queenPos,
-                    queenPocketName = queenBestPocket.first,
-                    queenPocketPos = queenBestPocket.second,
-                    queenGhostStriker = queenGhost,
-                    coverPuckId = coverCandidate.id,
-                    coverPuckPosition = coverPos,
-                    coverPocketName = coverPocket.first,
-                    coverPocketPos = coverPocket.second,
-                    isCoverGuaranteed = true,
-                    planDescription = "👑 Queen (${queenBestPocket.first}) ➜ Cover (${coverPocket.first})"
+            // Evaluate against all 4 corner pockets
+            for ((pName, pPos) in boardBounds.pockets) {
+                val dToPocket = hypot(pPos.x - puckScreenPos.x, pPos.y - puckScreenPos.y)
+                val dToStriker = hypot(puckScreenPos.x - strikerScreenPos.x, puckScreenPos.y - strikerScreenPos.y)
+
+                // Check for straight line obstruction between puck and pocket
+                val pathClearance = calculatePathObstruction(
+                    start = puckScreenPos,
+                    end = pPos,
+                    allPucks = detectedVisionPucks,
+                    excludePuckPos = puckScreenPos,
+                    clearanceRadius = puckRadiusPx * scaleToScreen
                 )
-                finalTrajectory = finalTrajectory.copy(
-                    isQueenShot = true,
-                    queenCoverPlan = queenCoverPlan
-                )
-            }
-        }
 
-        return finalTrajectory
-    }
+                // Cut angle score: angle between striker-to-puck and puck-to-pocket
+                val vSP = Vector2(puckScreenPos.x - strikerScreenPos.x, puckScreenPos.y - strikerScreenPos.y).normalized()
+                val vPK = Vector2(pPos.x - puckScreenPos.x, pPos.y - puckScreenPos.y).normalized()
+                val alignment = vSP.dot(vPK).coerceIn(-1f, 1f) // 1.0 = direct straight shot, < 0 = back cut
 
-    /**
-     * Calculates optimal baseline probe spots across the baseline width.
-     */
-    fun calculateBaselinePlacementGuide(
-        coin: PointF,
-        pockets: List<Pair<String, PointF>>,
-        bounds: CarromBoardBounds,
-        config: AimEngineConfig
-    ): Pair<List<BaselinePlacementSpot>, BaselinePlacementSpot?> {
-        val baselineY = bounds.baselineY
-        val startX = bounds.baselineStartX
-        val endX = bounds.baselineEndX
-        val steps = 6
-        val spots = mutableListOf<BaselinePlacementSpot>()
+                // High score for clear path, straight alignment, closer distance, Queen bonus
+                val queenBonus = if (cand.type == PuckType.QUEEN) 200f else 0f
+                val shotScore = (pathClearance * 500f) + (alignment * 300f) - (dToPocket * 0.4f) - (dToStriker * 0.2f) + queenBonus
 
-        for (i in 0..steps) {
-            val fraction = i.toFloat() / steps
-            val currentX = startX + (endX - startX) * fraction
-            val probePos = PointF(currentX, baselineY)
-
-            val bestPocket = findOptimalPocket(probePos, coin, pockets)
-            val vCP = (Vector2.fromPointF(bestPocket.second) - Vector2.fromPointF(coin)).normalized()
-            val ghost = (Vector2.fromPointF(coin) - vCP * (config.strikerRadius + config.coinRadius)).toPointF()
-            val vGhostStriker = (Vector2.fromPointF(ghost) - Vector2.fromPointF(probePos)).normalized()
-            val dot = (vGhostStriker.dot(vCP)).coerceIn(-1f, 1f)
-            val cutAngleRad = acos(dot)
-            val cutAngleDeg = Math.toDegrees(cutAngleRad.toDouble()).toFloat()
-
-            val prob = when {
-                cutAngleDeg < 12f -> 99
-                cutAngleDeg < 24f -> 95
-                cutAngleDeg < 38f -> 89
-                cutAngleDeg < 52f -> 78
-                cutAngleDeg < 68f -> 64
-                else -> 48
-            }
-
-            val pwr = computeDynamicStrokePower(probePos, ghost, coin, bestPocket.second, 0).first
-
-            val label = when {
-                fraction < 0.15f -> "Left"
-                fraction > 0.85f -> "Right"
-                fraction in 0.40f..0.60f -> "Center"
-                fraction < 0.40f -> "Mid-Left"
-                else -> "Mid-Right"
-            }
-
-            spots.add(
-                BaselinePlacementSpot(
-                    position = probePos,
-                    winProbability = prob,
-                    cutAngleDeg = cutAngleDeg,
-                    isOptimal = false,
-                    targetPocketName = bestPocket.first,
-                    recommendedPower = pwr,
-                    spotLabel = label
-                )
-            )
-        }
-
-        val bestSpot = spots.maxByOrNull { it.winProbability - (it.cutAngleDeg * 0.25f) }
-        val updatedSpots = spots.map {
-            if (it == bestSpot) it.copy(isOptimal = true) else it
-        }
-
-        return Pair(updatedSpots, bestSpot?.copy(isOptimal = true))
-    }
-
-    /**
-     * Calculates pocket mouth opening geometry and entry angle tolerance cone.
-     */
-    fun calculatePocketTolerance(
-        coin: PointF,
-        pocket: PointF,
-        pocketRadius: Float
-    ): Triple<PointF, PointF, Float> {
-        val vCP = (Vector2.fromPointF(pocket) - Vector2.fromPointF(coin)).normalized()
-        val vPerp = Vector2(-vCP.y, vCP.x)
-        val mouthWidth = pocketRadius * 0.85f
-        val left = PointF(pocket.x + vPerp.x * mouthWidth, pocket.y + vPerp.y * mouthWidth)
-        val right = PointF(pocket.x - vPerp.x * mouthWidth, pocket.y - vPerp.y * mouthWidth)
-        val dist = hypot(pocket.x - coin.x, pocket.y - coin.y)
-        val marginDeg = if (dist > 1f) {
-            (Math.toDegrees(asin((pocketRadius / dist).coerceIn(0.1f, 0.45f).toDouble())).toFloat()).coerceIn(8f, 22f)
-        } else {
-            14.5f
-        }
-        return Triple(left, right, marginDeg)
-    }
-
-    fun distancePointToSegment(p: PointF, a: PointF, b: PointF): Float {
-        val l2 = (b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)
-        if (l2 < 0.0001f) return hypot(p.x - a.x, p.y - a.y)
-        val t = (((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2).coerceIn(0f, 1f)
-        val projX = a.x + t * (b.x - a.x)
-        val projY = a.y + t * (b.y - a.y)
-        return hypot(p.x - projX, p.y - projY)
-    }
-
-    fun checkRayObstacles(ray: List<PointF>, obstacles: List<PointF>, clearanceRadius: Float = 34f): Int {
-        var collisionCount = 0
-        if (ray.size < 2 || obstacles.isEmpty()) return 0
-
-        for (i in 0 until ray.size - 1) {
-            val a = ray[i]
-            val b = ray[i + 1]
-            for (obs in obstacles) {
-                if (hypot(obs.x - a.x, obs.y - a.y) < 14f || hypot(obs.x - b.x, obs.y - b.y) < 14f) continue
-                val dist = distancePointToSegment(obs, a, b)
-                if (dist < clearanceRadius) {
-                    collisionCount++
+                if (shotScore > bestShotScore) {
+                    bestShotScore = shotScore
+                    optimalTargetPuck = puckScreenPos
+                    selectedPocket = pPos
+                    selectedPocketName = pName
                 }
             }
         }
-        return collisionCount
+
+        return DetectedBoardVisionResult(
+            isPlayerTurn = true,
+            strikerPosition = strikerScreenPos,
+            targetPuckPosition = optimalTargetPuck,
+            detectedPucks = detectedVisionPucks,
+            targetPocket = selectedPocket,
+            targetPocketName = selectedPocketName,
+            isVisionCalibrated = true
+        )
     }
 
-    fun findFirstBlockingObstacle(ray: List<PointF>, obstacles: List<PointF>, clearanceRadius: Float = 34f): PointF? {
-        if (ray.size < 2 || obstacles.isEmpty()) return null
-        for (i in 0 until ray.size - 1) {
-            val a = ray[i]
-            val b = ray[i + 1]
-            for (obs in obstacles) {
-                if (hypot(obs.x - a.x, obs.y - a.y) < 14f || hypot(obs.x - b.x, obs.y - b.y) < 14f) continue
-                val dist = distancePointToSegment(obs, a, b)
-                if (dist < clearanceRadius) {
-                    return obs
+    /**
+     * Checks radial ring symmetry to confirm a striker disc pattern.
+     */
+    private fun evaluateRadialRing(
+        pixels: IntArray,
+        side: Int,
+        cx: Int,
+        cy: Int,
+        minR: Float,
+        maxR: Float,
+        hsvTemp: FloatArray
+    ): Float {
+        var matchCount = 0
+        val testAngles = 12
+        val midR = (minR + maxR) / 2f
+
+        for (i in 0 until testAngles) {
+            val theta = (i * 2.0 * PI / testAngles)
+            val rx = (cx + midR * cos(theta)).toInt()
+            val ry = (cy + midR * sin(theta)).toInt()
+
+            if (rx in 0 until side && ry in 0 until side) {
+                val p = pixels[ry * side + rx]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                Color.RGBToHSV(r, g, b, hsvTemp)
+                if (hsvTemp[2] > 0.65f || hsvTemp[1] > 0.50f) {
+                    matchCount++
                 }
             }
         }
-        return null
-    }
-
-    // =========================================================================
-    // 1. DIRECT POT SHOT ALGORITHM
-    // =========================================================================
-    fun calculateDirectPot(
-        striker: PointF,
-        coin: PointF,
-        pockets: List<Pair<String, PointF>>,
-        bounds: CarromBoardBounds,
-        config: AimEngineConfig,
-        obstacles: List<PointF> = emptyList()
-    ): AimTrajectory {
-        val bestPocket = findOptimalPocket(striker, coin, pockets)
-        val pocketName = bestPocket.first
-        val pocketPos = bestPocket.second
-
-        // 1. Coin -> Pocket unit normal
-        val vCP = (Vector2.fromPointF(pocketPos) - Vector2.fromPointF(coin)).normalized()
-
-        // 2. Ghost Striker Position (R_striker + R_coin behind target puck)
-        val contactDistance = config.strikerRadius + config.coinRadius
-        val rawGhost = (Vector2.fromPointF(coin) - vCP * contactDistance).toPointF()
-        val ghostPos = bounds.clampToCushions(rawGhost)
-
-        // 3. Striker -> Ghost Normal
-        val vSG = (Vector2.fromPointF(ghostPos) - Vector2.fromPointF(striker)).normalized()
-
-        // 4. Cut Angle
-        val dotVal = (vSG.dot(vCP)).coerceIn(-1f, 1f)
-        val cutAngleRad = acos(dotVal)
-        val cutAngleDeg = Math.toDegrees(cutAngleRad.toDouble()).toFloat()
-
-        // Striker Post-Collision Deflection Ray (clamped to cushion bounds)
-        val vPerp = Vector2(-vCP.y, vCP.x)
-        val deflectSign = if (vSG.dot(vPerp) >= 0) 1f else -1f
-        val deflectLen = (sin(cutAngleRad) * 150f).coerceIn(20f, 180f)
-        val rawDeflectEnd = PointF(ghostPos.x + vPerp.x * deflectSign * deflectLen, ghostPos.y + vPerp.y * deflectSign * deflectLen)
-        val strikerDeflectEnd = bounds.clampToCushions(rawDeflectEnd)
-
-        val directStrikeLine = listOf(striker, ghostPos)
-        val coinToPocketLine = listOf(coin, pocketPos)
-
-        val strikeObstacles = checkRayObstacles(directStrikeLine, obstacles)
-        val potObstacles = checkRayObstacles(coinToPocketLine, obstacles)
-        val totalObstacles = strikeObstacles + potObstacles
-        val isCleanPath = totalObstacles == 0
-        val blockerPoint = if (!isCleanPath) findFirstBlockingObstacle(directStrikeLine + coinToPocketLine, obstacles) else null
-
-        val (mouthL, mouthR, tolDeg) = calculatePocketTolerance(coin, pocketPos, bounds.pocketRadius)
-        val isWithinTolerance = cutAngleDeg < (tolDeg * 2.8f)
-
-        val (power, powerLabel, pullbackPx) = computeDynamicStrokePower(striker, ghostPos, coin, pocketPos, 0)
-        val totalDist = hypot(ghostPos.x - striker.x, ghostPos.y - striker.y) + hypot(pocketPos.x - coin.x, pocketPos.y - coin.y)
-        val lockScore = if (isCleanPath) (100 - cutAngleDeg.toInt() * 0.5f).toInt().coerceIn(75, 99) else 45
-
-        return AimTrajectory(
-            shotType = LineRenderMode.DIRECT,
-            strikerPos = striker,
-            coinPos = coin,
-            targetPocket = pocketPos,
-            pocketName = pocketName,
-            ghostStrikerPos = ghostPos,
-            directStrikeLine = directStrikeLine,
-            coinToPocketLine = coinToPocketLine,
-            strikerReboundLine = listOf(ghostPos, strikerDeflectEnd),
-            boardBounds = bounds,
-            pocketEntryMarginDeg = tolDeg,
-            pocketMouthLeft = mouthL,
-            pocketMouthRight = mouthR,
-            isWithinToleranceMargin = isWithinTolerance,
-            toleranceLabel = "±${String.format("%.1f", tolDeg)}° Safe Margin",
-            isAutoRerouted = false,
-            blockedObstaclePos = blockerPoint,
-            obstructedDirectLine = if (!isCleanPath) directStrikeLine + coinToPocketLine else emptyList(),
-            angleDegrees = (Math.toDegrees(atan2((ghostPos.y - striker.y).toDouble(), (ghostPos.x - striker.x).toDouble())).toFloat() + 360f) % 360f,
-            cutAngleDegrees = cutAngleDeg,
-            isPocketLocked = isCleanPath && cutAngleDeg < 72f,
-            lockScorePercent = lockScore,
-            isGuaranteedWin = isCleanPath && cutAngleDeg < 35f,
-            recommendedPower = power,
-            powerLabel = powerLabel,
-            dynamicPullbackDistancePx = pullbackPx,
-            totalShotDistancePx = totalDist,
-            isObstacleAvoided = isCleanPath,
-            obstacleCount = totalObstacles,
-            shotTitle = if (isCleanPath) "🎯 Direct Pot Locked ($pocketName)" else "⚠️ Path Obstructed",
-            strategyNotes = "Zero-Miss Elastic Collision Solved (${cutAngleDeg.toInt()}° Cut • $powerLabel)"
-        )
-    }
-
-    // =========================================================================
-    // 2. 1, 2, AND 3-CUSHION BANK SHOT PHYSICS (CLAMPED TO RAILS)
-    // =========================================================================
-    fun calculateBankShot(
-        striker: PointF,
-        coin: PointF,
-        pockets: List<Pair<String, PointF>>,
-        bounds: CarromBoardBounds,
-        config: AimEngineConfig,
-        cushions: Int = 1,
-        obstacles: List<PointF> = emptyList()
-    ): AimTrajectory {
-        val bestPocket = findOptimalPocket(striker, coin, pockets)
-        val pocketName = bestPocket.first
-        val pocketPos = bestPocket.second
-
-        val vCP = (Vector2.fromPointF(pocketPos) - Vector2.fromPointF(coin)).normalized()
-        val contactDistance = config.strikerRadius + config.coinRadius
-        val rawGhost = (Vector2.fromPointF(coin) - vCP * contactDistance).toPointF()
-        val ghostPos = bounds.clampToCushions(rawGhost)
-
-        val initialDir = (Vector2.fromPointF(ghostPos) - Vector2.fromPointF(striker)).normalized().toPointF()
-        val bankRays = calculateMultiCushionRebound(striker, initialDir, bounds, cushions)
-        val cushionNodes = if (bankRays.size > 2) bankRays.subList(1, bankRays.size - 1) else emptyList()
-
-        val obstaclesCount = checkRayObstacles(bankRays, obstacles)
-        val (power, powerLabel, pullbackPx) = computeDynamicStrokePower(striker, ghostPos, coin, pocketPos, cushions)
-        val totalDist = hypot(pocketPos.x - coin.x, pocketPos.y - coin.y) + (cushions * 300f)
-
-        val mode = when (cushions) {
-            1 -> LineRenderMode.BANK_1_CUSHION
-            2 -> LineRenderMode.BANK_2_CUSHION
-            else -> LineRenderMode.BANK_3_CUSHION
-        }
-
-        return AimTrajectory(
-            shotType = mode,
-            strikerPos = striker,
-            coinPos = coin,
-            targetPocket = pocketPos,
-            pocketName = pocketName,
-            ghostStrikerPos = ghostPos,
-            directStrikeLine = listOf(striker, ghostPos),
-            coinToPocketLine = listOf(coin, pocketPos),
-            bankShotLines = bankRays,
-            cushionImpactPoints = cushionNodes,
-            boardBounds = bounds,
-            angleDegrees = (Math.toDegrees(atan2((ghostPos.y - striker.y).toDouble(), (ghostPos.x - striker.x).toDouble())).toFloat() + 360f) % 360f,
-            cutAngleDegrees = 18f * cushions,
-            isPocketLocked = obstaclesCount == 0,
-            lockScorePercent = (95 - cushions * 6).coerceIn(60, 95),
-            isGuaranteedWin = false,
-            recommendedPower = power,
-            powerLabel = powerLabel,
-            dynamicPullbackDistancePx = pullbackPx,
-            totalShotDistancePx = totalDist,
-            isObstacleAvoided = obstaclesCount == 0,
-            obstacleCount = obstaclesCount,
-            shotTitle = "${mode.badge} Solved ($pocketName)",
-            strategyNotes = "Reflection Angle θi = θr Calibrated (${cushions}-Cushion Rails • $powerLabel)"
-        )
-    }
-
-    // =========================================================================
-    // 3. COIN-TO-COIN DEFLECTION / KISS CAROM COMBO SHOT
-    // =========================================================================
-    fun calculateKissShot(
-        striker: PointF,
-        coin: PointF,
-        pockets: List<Pair<String, PointF>>,
-        bounds: CarromBoardBounds,
-        config: AimEngineConfig
-    ): AimTrajectory {
-        val bestPocket = findOptimalPocket(striker, coin, pockets)
-        val pocketName = bestPocket.first
-        val pocketPos = bestPocket.second
-
-        val vCP = (Vector2.fromPointF(pocketPos) - Vector2.fromPointF(coin)).normalized()
-        val secondaryPos = bounds.clampToCushions(
-            PointF(
-                coin.x - vCP.x * (config.coinRadius * 2.2f) + (vCP.y * 36f),
-                coin.y - vCP.y * (config.coinRadius * 2.2f) - (vCP.x * 36f)
-            )
-        )
-
-        val ghostPos = bounds.clampToCushions(
-            PointF(
-                coin.x - vCP.x * (config.strikerRadius + config.coinRadius),
-                coin.y - vCP.y * (config.strikerRadius + config.coinRadius)
-            )
-        )
-
-        val kissRays = listOf(striker, ghostPos, secondaryPos, pocketPos)
-        val (power, powerLabel, pullbackPx) = computeDynamicStrokePower(striker, ghostPos, coin, pocketPos, 1)
-
-        return AimTrajectory(
-            shotType = LineRenderMode.KISS_SHOT,
-            strikerPos = striker,
-            coinPos = coin,
-            secondaryCoinPos = secondaryPos,
-            targetPocket = pocketPos,
-            pocketName = pocketName,
-            ghostStrikerPos = ghostPos,
-            directStrikeLine = listOf(striker, ghostPos),
-            coinToPocketLine = listOf(secondaryPos, pocketPos),
-            kissShotLines = kissRays,
-            boardBounds = bounds,
-            angleDegrees = (Math.toDegrees(atan2((ghostPos.y - striker.y).toDouble(), (ghostPos.x - striker.x).toDouble())).toFloat() + 360f) % 360f,
-            cutAngleDegrees = 28.5f,
-            isPocketLocked = true,
-            lockScorePercent = 92,
-            recommendedPower = power,
-            powerLabel = powerLabel,
-            dynamicPullbackDistancePx = pullbackPx,
-            isObstacleAvoided = true,
-            obstacleCount = 0,
-            shotTitle = "⚡ Kiss / Combo Shot ($pocketName)",
-            strategyNotes = "Dual-Body Elastic Transfer into $pocketName Pocket ($powerLabel)"
-        )
-    }
-
-    // =========================================================================
-    // 3.5. 3-BODY CHAIN REACTION PHYSICS
-    // =========================================================================
-    fun calculate3BodyComboShot(
-        striker: PointF,
-        coinA: PointF,
-        coinB: PointF,
-        pockets: List<Pair<String, PointF>>,
-        bounds: CarromBoardBounds,
-        config: AimEngineConfig
-    ): AimTrajectory {
-        val bestPocket = findOptimalPocket(coinA, coinB, pockets)
-        val pocketName = bestPocket.first
-        val pocketPos = bestPocket.second
-
-        val vBP = (Vector2.fromPointF(pocketPos) - Vector2.fromPointF(coinB)).normalized()
-        val contactDistPucks = config.coinRadius * 2f
-        val ghostB = bounds.clampToCushions((Vector2.fromPointF(coinB) - vBP * contactDistPucks).toPointF())
-
-        val vAG = (Vector2.fromPointF(ghostB) - Vector2.fromPointF(coinA)).normalized()
-        val contactDistStriker = config.strikerRadius + config.coinRadius
-        val ghostA = bounds.clampToCushions((Vector2.fromPointF(coinA) - vAG * contactDistStriker).toPointF())
-
-        val vSG = (Vector2.fromPointF(ghostA) - Vector2.fromPointF(striker)).normalized()
-
-        val dot1 = (vSG.dot(vAG)).coerceIn(-1f, 1f)
-        val cut1Rad = acos(dot1)
-        val cut1Deg = Math.toDegrees(cut1Rad.toDouble()).toFloat()
-
-        val dot2 = (vAG.dot(vBP)).coerceIn(-1f, 1f)
-        val cut2Rad = acos(dot2)
-        val cut2Deg = Math.toDegrees(cut2Rad.toDouble()).toFloat()
-
-        val energyPercent = (cos(cut1Rad) * cos(cut2Rad) * 100).toInt().coerceIn(35, 98)
-
-        val vPerp1 = Vector2(-vAG.y, vAG.x)
-        val strikerDeflectEnd = bounds.clampToCushions(
-            PointF(ghostA.x + vPerp1.x * sin(cut1Rad) * 120f, ghostA.y + vPerp1.y * sin(cut1Rad) * 120f)
-        )
-
-        val vPerp2 = Vector2(-vBP.y, vBP.x)
-        val puckADeflectEnd = bounds.clampToCushions(
-            PointF(ghostB.x + vPerp2.x * sin(cut2Rad) * 100f, ghostB.y + vPerp2.y * sin(cut2Rad) * 100f)
-        )
-
-        val comboLines = listOf(striker, ghostA, coinA, ghostB, coinB, pocketPos)
-        val (tolLeft, tolRight, tolDeg) = calculatePocketTolerance(coinB, pocketPos, bounds.pocketRadius)
-
-        val (power, powerLabel, pullbackPx) = computeDynamicStrokePower(striker, ghostA, coinB, pocketPos, 1)
-        val totalDist = hypot(ghostA.x - striker.x, ghostA.y - striker.y) +
-                hypot(ghostB.x - coinA.x, ghostB.y - coinA.y) +
-                hypot(pocketPos.x - coinB.x, pocketPos.y - coinB.y)
-
-        val lockScore = (98 - (cut1Deg + cut2Deg) * 0.35f).toInt().coerceIn(68, 98)
-
-        return AimTrajectory(
-            shotType = LineRenderMode.COMBO_3_BODY,
-            strikerPos = striker,
-            coinPos = coinA,
-            secondaryCoinPos = coinB,
-            targetPocket = pocketPos,
-            pocketName = pocketName,
-            ghostStrikerPos = ghostA,
-            directStrikeLine = listOf(striker, ghostA),
-            coinToPocketLine = listOf(coinB, pocketPos),
-            strikerReboundLine = listOf(ghostA, strikerDeflectEnd),
-            kissShotLines = comboLines,
-            boardBounds = bounds,
-            is3BodyCombo = true,
-            comboPuckAPos = coinA,
-            comboPuckBPos = coinB,
-            ghostPuckAPos = ghostB,
-            comboEnergyTransferPercent = energyPercent,
-            comboPuckADeflectionLine = listOf(ghostB, puckADeflectEnd),
-            pocketEntryMarginDeg = tolDeg,
-            pocketMouthLeft = tolLeft,
-            pocketMouthRight = tolRight,
-            isWithinToleranceMargin = cut2Deg < tolDeg * 2.5f,
-            toleranceLabel = "±${String.format("%.1f", tolDeg)}° Entry Cone",
-            angleDegrees = (Math.toDegrees(atan2((ghostA.y - striker.y).toDouble(), (ghostA.x - striker.x).toDouble())).toFloat() + 360f) % 360f,
-            cutAngleDegrees = cut1Deg + cut2Deg,
-            isPocketLocked = lockScore >= 75,
-            lockScorePercent = lockScore,
-            isGuaranteedWin = lockScore >= 92,
-            recommendedPower = 95,
-            powerLabel = "Max Kinetic Chain (95%)",
-            dynamicPullbackDistancePx = 175f,
-            totalShotDistancePx = totalDist,
-            isObstacleAvoided = true,
-            obstacleCount = 0,
-            shotTitle = "⚡ 3-Body Chain Reaction ($pocketName)",
-            strategyNotes = "Kinetic Transfer S ➜ A ➜ B ($energyPercent% Energy • $powerLabel)"
-        )
-    }
-
-    // =========================================================================
-    // 4. CUT SHOT & TANGENT CONTACT PLANE
-    // =========================================================================
-    fun calculateCutShot(
-        striker: PointF,
-        coin: PointF,
-        pockets: List<Pair<String, PointF>>,
-        bounds: CarromBoardBounds,
-        config: AimEngineConfig,
-        obstacles: List<PointF> = emptyList()
-    ): AimTrajectory {
-        val direct = calculateDirectPot(striker, coin, pockets, bounds, config, obstacles)
-        val vCP = (Vector2.fromPointF(direct.targetPocket) - Vector2.fromPointF(coin)).normalized()
-
-        val vTangent = Vector2(-vCP.y, vCP.x)
-        val tangentLen = 65f
-        val tangentStart = bounds.clampToCushions(
-            (Vector2.fromPointF(direct.ghostStrikerPos) - vTangent * tangentLen).toPointF()
-        )
-        val tangentEnd = bounds.clampToCushions(
-            (Vector2.fromPointF(direct.ghostStrikerPos) + vTangent * tangentLen).toPointF()
-        )
-
-        return direct.copy(
-            shotType = LineRenderMode.CUT_SHOT,
-            tangentLine = listOf(tangentStart, tangentEnd),
-            shotTitle = "📐 Cut Shot Tangent Solved (${direct.pocketName})",
-            strategyNotes = "Edge Slice Offset Plane: ${direct.cutAngleDegrees.toInt()}° Cut (${direct.powerLabel})"
-        )
-    }
-
-    // =========================================================================
-    // 5. BACK-SLICE & RAIL REBOUND SHOT
-    // =========================================================================
-    fun calculateBackSliceRebound(
-        striker: PointF,
-        coin: PointF,
-        pockets: List<Pair<String, PointF>>,
-        bounds: CarromBoardBounds,
-        config: AimEngineConfig,
-        obstacles: List<PointF> = emptyList()
-    ): AimTrajectory {
-        val bestPocket = findOptimalPocket(striker, coin, pockets)
-        val pocketName = bestPocket.first
-        val pocketPos = bestPocket.second
-
-        val cushionY = bounds.cushionTop
-        val bounceX = ((striker.x + coin.x) / 2f).coerceIn(bounds.cushionLeft + 30f, bounds.cushionRight - 30f)
-        val bouncePoint = PointF(bounceX, cushionY)
-
-        val vCP = (Vector2.fromPointF(pocketPos) - Vector2.fromPointF(coin)).normalized()
-        val ghostPos = bounds.clampToCushions(
-            (Vector2.fromPointF(coin) - vCP * (config.strikerRadius + config.coinRadius)).toPointF()
-        )
-
-        val backSliceRays = listOf(striker, bouncePoint, ghostPos)
-        val (power, powerLabel, pullbackPx) = computeDynamicStrokePower(striker, bouncePoint, coin, pocketPos, 1)
-
-        return AimTrajectory(
-            shotType = LineRenderMode.BACK_SLICE,
-            strikerPos = striker,
-            coinPos = coin,
-            targetPocket = pocketPos,
-            pocketName = pocketName,
-            ghostStrikerPos = ghostPos,
-            directStrikeLine = listOf(striker, bouncePoint),
-            coinToPocketLine = listOf(coin, pocketPos),
-            backSliceRays = backSliceRays,
-            cushionImpactPoints = listOf(bouncePoint),
-            boardBounds = bounds,
-            angleDegrees = (Math.toDegrees(atan2((bouncePoint.y - striker.y).toDouble(), (bouncePoint.x - striker.x).toDouble())).toFloat() + 360f) % 360f,
-            cutAngleDegrees = 24f,
-            isPocketLocked = true,
-            lockScorePercent = 94,
-            recommendedPower = power,
-            powerLabel = powerLabel,
-            dynamicPullbackDistancePx = pullbackPx,
-            isObstacleAvoided = true,
-            shotTitle = "🔄 Back-Slice Rebound ($pocketName)",
-            strategyNotes = "Top Cushion Rebound -> Rear Puck Strike into $pocketName ($powerLabel)"
-        )
-    }
-
-    // =========================================================================
-    // 5.5. BREAK-SHOT AI VECTOR CALCULATION
-    // =========================================================================
-    fun calculateBreakShot(
-        striker: PointF,
-        coin: PointF,
-        pockets: List<Pair<String, PointF>>,
-        bounds: CarromBoardBounds,
-        config: AimEngineConfig,
-        visionMatrix: BoardVisionMatrix? = null
-    ): AimTrajectory {
-        val center = bounds.boardCenter
-        val clusterTarget = visionMatrix?.queenPuck?.position?.let { bounds.clampToCushions(it) } ?: center
-
-        val vSC = (Vector2.fromPointF(clusterTarget) - Vector2.fromPointF(striker)).normalized()
-        val contactDistance = config.strikerRadius + config.coinRadius
-        val ghostPos = bounds.clampToCushions((Vector2.fromPointF(clusterTarget) - vSC * contactDistance).toPointF())
-
-        val scatterLeft = pockets.firstOrNull { it.first.contains("Bottom-Left") }?.second ?: PointF(bounds.cushionLeft + 30f, bounds.cushionBottom - 30f)
-        val scatterRight = pockets.firstOrNull { it.first.contains("Bottom-Right") }?.second ?: PointF(bounds.cushionRight - 30f, bounds.cushionBottom - 30f)
-        val scatterLine = listOf(clusterTarget, scatterLeft, clusterTarget, scatterRight)
-
-        val directStrikeLine = listOf(striker, ghostPos)
-        val totalDist = hypot(ghostPos.x - striker.x, ghostPos.y - striker.y)
-        val angleDeg = (Math.toDegrees(atan2((ghostPos.y - striker.y).toDouble(), (ghostPos.x - striker.x).toDouble())).toFloat() + 360f) % 360f
-
-        return AimTrajectory(
-            shotType = LineRenderMode.BREAK_SHOT,
-            strikerPos = striker,
-            coinPos = clusterTarget,
-            targetPocket = scatterRight,
-            pocketName = "Center Cluster Break",
-            ghostStrikerPos = ghostPos,
-            directStrikeLine = directStrikeLine,
-            coinToPocketLine = listOf(clusterTarget, scatterRight),
-            kissShotLines = scatterLine,
-            boardBounds = bounds,
-            angleDegrees = angleDeg,
-            cutAngleDegrees = 0f,
-            isPocketLocked = true,
-            lockScorePercent = 99,
-            isGuaranteedWin = true,
-            recommendedPower = 100,
-            powerLabel = "Max Power (100% Break)",
-            dynamicPullbackDistancePx = 180f,
-            totalShotDistancePx = totalDist,
-            isObstacleAvoided = true,
-            obstacleCount = 0,
-            shotTitle = "💥 Optimal Break-Shot Vector (100% Power)",
-            strategyNotes = "Max-Energy Center Cluster Explosion"
-        )
-    }
-
-    // =========================================================================
-    // 6. LASER PRO AI MASTER
-    // =========================================================================
-    fun evaluateOptimalMasterShot(
-        striker: PointF,
-        coin: PointF,
-        pockets: List<Pair<String, PointF>>,
-        bounds: CarromBoardBounds,
-        config: AimEngineConfig,
-        obstacles: List<PointF> = emptyList(),
-        visionMatrix: BoardVisionMatrix? = null
-    ): AimTrajectory {
-        val direct = calculateDirectPot(striker, coin, pockets, bounds, config, obstacles)
-
-        if (direct.isPocketLocked && direct.cutAngleDegrees < 65f && direct.obstacleCount == 0) {
-            val bankRays = calculateMultiCushionRebound(
-                striker,
-                PointF(direct.ghostStrikerPos.x - striker.x, direct.ghostStrikerPos.y - striker.y),
-                bounds,
-                1
-            )
-            return direct.copy(
-                shotType = LineRenderMode.LASER_PRO,
-                bankShotLines = bankRays,
-                cushionImpactPoints = bankRays.drop(1).dropLast(1),
-                shotTitle = "🌟 Laser Pro AI Master (${direct.pocketName})",
-                strategyNotes = "Zero-Obstacle Direct Path Solved • 100% Lock (${direct.powerLabel})"
-            )
-        }
-
-        val blocker = if (direct.obstacleCount > 0) direct.blockedObstaclePos else null
-        val bank1 = calculateBankShot(striker, coin, pockets, bounds, config, 1, obstacles)
-        if (bank1.isPocketLocked && bank1.obstacleCount == 0) {
-            return bank1.copy(
-                shotType = LineRenderMode.LASER_PRO,
-                isObstacleAvoided = true,
-                isAutoRerouted = direct.obstacleCount > 0,
-                blockedObstaclePos = blocker,
-                obstructedDirectLine = direct.obstructedDirectLine,
-                rerouteExplanation = if (direct.obstacleCount > 0) "⚠️ Blocker Avoided ➜ 1-Cushion Bank" else "",
-                shotTitle = if (direct.obstacleCount > 0) "🔀 Auto-Reroute (1-Cushion)" else "🌟 Laser Pro AI (1-Cushion)",
-                strategyNotes = "Smart Pathfinding: Obstacles Cleared via 1-Cushion Bank (${bank1.powerLabel})"
-            )
-        }
-
-        val bank2 = calculateBankShot(striker, coin, pockets, bounds, config, 2, obstacles)
-        return bank2.copy(
-            shotType = LineRenderMode.LASER_PRO,
-            isObstacleAvoided = true,
-            isAutoRerouted = direct.obstacleCount > 0,
-            blockedObstaclePos = blocker,
-            obstructedDirectLine = direct.obstructedDirectLine,
-            rerouteExplanation = if (direct.obstacleCount > 0) "⚠️ Blocker Avoided ➜ 2-Cushion Bank" else "",
-            shotTitle = if (direct.obstacleCount > 0) "🔀 Auto-Reroute (2-Cushion)" else "🌟 Laser Pro AI (2-Cushion)",
-            strategyNotes = "Smart Pathfinding: Multi-Cushion Obstacle Clearance (${bank2.powerLabel})"
-        )
+        return matchCount / testAngles.toFloat()
     }
 
     /**
-     * Identifies the optimal pocket prioritizing accessible quadrants and lowest cut angle.
+     * Verifies that a cluster around (cx, cy) is a consistent puck disc of given type.
      */
-    fun findOptimalPocket(
-        striker: PointF,
-        coin: PointF,
-        pockets: List<Pair<String, PointF>>
-    ): Pair<String, PointF> {
-        var best = pockets.first()
-        var minScore = Float.MAX_VALUE
+    private fun verifyPuckCluster(
+        pixels: IntArray,
+        side: Int,
+        cx: Int,
+        cy: Int,
+        radius: Float,
+        expectedType: PuckType
+    ): Float {
+        var matchingSamples = 0
+        var totalSamples = 0
+        val hsv = FloatArray(3)
+        val rInt = radius.toInt().coerceAtLeast(3)
 
-        for (pocket in pockets) {
-            val distCoinPocket = hypot(pocket.second.x - coin.x, pocket.second.y - coin.y)
-            val distStrikerCoin = hypot(coin.x - striker.x, coin.y - striker.y)
+        for (dy in -rInt..rInt step 2) {
+            for (dx in -rInt..rInt step 2) {
+                if (dx * dx + dy * dy <= radius * radius) {
+                    val px = cx + dx
+                    val py = cy + dy
+                    if (px in 0 until side && py in 0 until side) {
+                        totalSamples++
+                        val p = pixels[py * side + px]
+                        val r = (p shr 16) and 0xFF
+                        val g = (p shr 8) and 0xFF
+                        val b = p and 0xFF
+                        Color.RGBToHSV(r, g, b, hsv)
 
-            val vCP = (Vector2.fromPointF(pocket.second) - Vector2.fromPointF(coin)).normalized()
-            val vSC = (Vector2.fromPointF(coin) - Vector2.fromPointF(striker)).normalized()
-            val dot = (vSC.dot(vCP)).coerceIn(-1f, 1f)
-            val cutAngle = acos(dot)
-
-            // Favor accessible pockets with lowest cut angle and shortest direct path
-            val score = distCoinPocket + (cutAngle * 240f) + (distStrikerCoin * 0.25f)
-            if (score < minScore) {
-                minScore = score
-                best = pocket
-            }
-        }
-        return best
-    }
-
-    /**
-     * 100% Deterministic on-device raycasting physics:
-     * Evaluates all visible pucks against all 4 pockets to lock target priority
-     * on the easiest playable puck heading towards the nearest open pocket with maximum potting probability.
-     */
-    fun findEasiestPlayablePuck(
-        striker: PointF,
-        pucks: List<VisionPuck>,
-        pockets: List<Pair<String, PointF>>,
-        bounds: CarromBoardBounds,
-        config: AimEngineConfig
-    ): PointF {
-        val candidates = pucks.filter { it.type in listOf("WHITE", "TARGET", "BLACK", "QUEEN") }
-        if (candidates.isEmpty()) return bounds.boardCenter
-
-        var bestPuck = bounds.clampToCushions(candidates.first().position)
-        var bestPotProbability = -Float.MAX_VALUE
-
-        for (puck in candidates) {
-            val pPos = bounds.clampToCushions(puck.position)
-            for (pocket in pockets) {
-                val vCP = (Vector2.fromPointF(pocket.second) - Vector2.fromPointF(pPos)).normalized()
-                val contactDist = config.strikerRadius + config.coinRadius
-                val ghost = bounds.clampToCushions((Vector2.fromPointF(pPos) - vCP * contactDist).toPointF())
-                val vSG = (Vector2.fromPointF(ghost) - Vector2.fromPointF(striker)).normalized()
-
-                val dot = (vSG.dot(vCP)).coerceIn(-1f, 1f)
-                val cutAngleRad = acos(dot)
-                val cutAngleDeg = Math.toDegrees(cutAngleRad.toDouble()).toFloat()
-
-                val distStrikerToGhost = hypot(ghost.x - striker.x, ghost.y - striker.y)
-                val distPuckToPocket = hypot(pocket.second.x - pPos.x, pocket.second.y - pPos.y)
-
-                // Direct playable path evaluation
-                val cutScore = (180f - cutAngleDeg) * 1.6f
-                val distanceScore = (1200f - (distStrikerToGhost + distPuckToPocket)).coerceAtLeast(0f) * 0.12f
-                val queenBonus = if (puck.type == "QUEEN") 20f else 0f
-
-                val potProbabilityScore = cutScore + distanceScore + queenBonus
-
-                if (potProbabilityScore > bestPotProbability) {
-                    bestPotProbability = potProbabilityScore
-                    bestPuck = pPos
+                        val matches = when (expectedType) {
+                            PuckType.QUEEN -> (hsv[0] >= 340f || hsv[0] <= 20f) && hsv[1] > 0.60f
+                            PuckType.WHITE -> hsv[2] > 0.78f && hsv[1] < 0.25f
+                            PuckType.BLACK -> hsv[2] < 0.25f
+                            else -> false
+                        }
+                        if (matches) matchingSamples++
+                    }
                 }
             }
         }
-        return bestPuck
+
+        return if (totalSamples > 0) matchingSamples / totalSamples.toFloat() else 0f
     }
 
     /**
-     * Calculates exact boundary reflection vectors strictly clamped to inner cushion borders.
+     * Calculates path clearance from start to end (1.0 = clear, 0.0 = directly blocked).
      */
-    fun calculateMultiCushionRebound(
+    private fun calculatePathObstruction(
         start: PointF,
-        direction: PointF,
-        bounds: CarromBoardBounds,
-        maxCushions: Int = 3
-    ): List<PointF> {
-        val points = mutableListOf<PointF>()
-        val clampedStart = bounds.clampToCushions(start)
-        points.add(clampedStart)
+        end: PointF,
+        allPucks: List<VisionPuck>,
+        excludePuckPos: PointF,
+        clearanceRadius: Float
+    ): Float {
+        val lineVec = Vector2(end.x - start.x, end.y - start.y)
+        val lineLen = lineVec.length()
+        if (lineLen < 0.0001f) return 1f
 
-        val length = hypot(direction.x, direction.y)
-        if (length < 0.001f) return points
+        val lineNorm = lineVec.normalized()
 
-        var currentStart = clampedStart
-        var dirX = direction.x / length
-        var dirY = direction.y / length
+        for (puck in allPucks) {
+            val dExclude = hypot(puck.position.x - excludePuckPos.x, puck.position.y - excludePuckPos.y)
+            if (dExclude < clearanceRadius * 0.9f) continue
 
-        val minX = bounds.cushionLeft
-        val maxX = bounds.cushionRight
-        val minY = bounds.cushionTop
-        val maxY = bounds.cushionBottom
+            // Distance from point to line segment
+            val toPuck = Vector2(puck.position.x - start.x, puck.position.y - start.y)
+            val projection = toPuck.dot(lineNorm)
 
-        for (bounce in 0 until maxCushions) {
-            var tMin = Float.MAX_VALUE
-            var hitWall = -1 // 0=left, 1=right, 2=top, 3=bottom
-            var hitX = 0f
-            var hitY = 0f
-
-            // Right Wall
-            if (dirX > 0.0001f) {
-                val t = (maxX - currentStart.x) / dirX
-                if (t > 0.001f && t < tMin) {
-                    tMin = t
-                    hitWall = 1
-                    hitX = maxX
-                    hitY = currentStart.y + dirY * t
+            if (projection in (clearanceRadius * 0.5f)..(lineLen - clearanceRadius * 0.5f)) {
+                val perpDist = abs(toPuck.x * lineNorm.y - toPuck.y * lineNorm.x)
+                if (perpDist < clearanceRadius * 1.6f) {
+                    return 0.1f // Obstructed
                 }
-            } else if (dirX < -0.0001f) { // Left Wall
-                val t = (minX - currentStart.x) / dirX
-                if (t > 0.001f && t < tMin) {
-                    tMin = t
-                    hitWall = 0
-                    hitX = minX
-                    hitY = currentStart.y + dirY * t
-                }
-            }
-
-            // Bottom Wall
-            if (dirY > 0.0001f) {
-                val t = (maxY - currentStart.y) / dirY
-                if (t > 0.001f && t < tMin) {
-                    tMin = t
-                    hitWall = 3
-                    hitX = currentStart.x + dirX * t
-                    hitY = maxY
-                }
-            } else if (dirY < -0.0001f) { // Top Wall
-                val t = (minY - currentStart.y) / dirY
-                if (t > 0.001f && t < tMin) {
-                    tMin = t
-                    hitWall = 2
-                    hitX = currentStart.x + dirX * t
-                    hitY = minY
-                }
-            }
-
-            if (tMin < Float.MAX_VALUE && hitWall != -1) {
-                val hitPoint = PointF(hitX.coerceIn(minX, maxX), hitY.coerceIn(minY, maxY))
-                points.add(hitPoint)
-
-                when (hitWall) {
-                    0, 1 -> dirX = -dirX
-                    2, 3 -> dirY = -dirY
-                }
-
-                currentStart = hitPoint
-            } else {
-                break
             }
         }
-
-        // Add trailing guide segment inside cushions
-        if (points.size > 1) {
-            val lastPoint = points.last()
-            val guideLen = 100f
-            val endPoint = PointF(
-                (lastPoint.x + dirX * guideLen).coerceIn(minX, maxX),
-                (lastPoint.y + dirY * guideLen).coerceIn(minY, maxY)
-            )
-            points.add(endPoint)
-        }
-
-        return points
+        return 1.0f // Clear path
     }
 
-    var isAutoPlayActive: Boolean = false
-    var isFastModeActive: Boolean = true
-    var isCenterBullseyeActive: Boolean = false
-    var laserThickness: Float = 4.0f
-    var lineColor: Int = Color.parseColor("#00E5FF")
-
-    // =========================================================================
-    // LIGHTWEIGHT VISION PUCK & STRIKER DETECTOR HELPER
-    // =========================================================================
     /**
-     * Color matrix & circle threshold helper:
-     * Extracts active striker and puck positions directly from the game board viewport
-     * or screen image buffer via fast color-matrix and brightness clustering.
+     * Fallback for bitmap input (extracts direct pixels and delegates to scanBoardPixelsDirect).
      */
     fun detectBoardEntitiesFromViewport(
         boardBitmap: Bitmap?,
         boardBounds: CarromBoardBounds
     ): DetectedBoardVisionResult {
-        if (boardBitmap == null || boardBitmap.isRecycled || boardBitmap.width < 10 || boardBitmap.height < 10) {
-            val center = boardBounds.boardCenter
-            return DetectedBoardVisionResult(
-                strikerPosition = PointF((boardBounds.baselineStartX + boardBounds.baselineEndX) / 2f, boardBounds.baselineY),
-                detectedPucks = listOf(
-                    VisionPuck("QUEEN", PointF(center.x, center.y), "QUEEN", radius = 24f),
-                    VisionPuck("WHITE_1", PointF(center.x - 70f, center.y - 60f), "WHITE", radius = 23f),
-                    VisionPuck("BLACK_1", PointF(center.x + 65f, center.y - 50f), "BLACK", radius = 23f)
-                ),
-                isVisionCalibrated = true
-            )
+        if (boardBitmap == null || boardBitmap.isRecycled) {
+            return DetectedBoardVisionResult(isPlayerTurn = false, strikerPosition = null, targetPuckPosition = null)
         }
 
-        val bmpW = boardBitmap.width
-        val bmpH = boardBitmap.height
-        val cLeft = boardBounds.cushionLeft.coerceIn(0f, bmpW - 1f).toInt()
-        val cTop = boardBounds.cushionTop.coerceIn(0f, bmpH - 1f).toInt()
-        val cRight = boardBounds.cushionRight.coerceIn(0f, bmpW - 1f).toInt()
-        val cBottom = boardBounds.cushionBottom.coerceIn(0f, bmpH - 1f).toInt()
+        try {
+            val bmpW = boardBitmap.width
+            val bmpH = boardBitmap.height
+            val side = min(bmpW, bmpH)
+            val startX = (bmpW - side) / 2
+            val startY = (bmpH - side) / 2
 
-        val foundPucks = mutableListOf<VisionPuck>()
-        var foundStriker: PointF? = null
-        val minClusterDist = (boardBounds.boardSize * 0.045f).coerceAtLeast(20f)
-        val step = 12 // Fast subsampling grid for 60 FPS non-blocking execution
+            val pixels = IntArray(side * side)
+            boardBitmap.getPixels(pixels, 0, side, startX, startY, side, side)
 
-        for (y in cTop until cBottom step step) {
-            for (x in cLeft until cRight step step) {
-                val pixel = boardBitmap.getPixel(x, y)
-                val r = Color.red(pixel)
-                val g = Color.green(pixel)
-                val b = Color.blue(pixel)
-
-                // 1. Queen Red/Pink detection: High R, lower G/B
-                if (r > 180 && g < 90 && b < 110) {
-                    val pt = PointF(x.toFloat(), y.toFloat())
-                    if (foundPucks.none { hypot(it.position.x - pt.x, it.position.y - pt.y) < minClusterDist }) {
-                        foundPucks.add(VisionPuck("QUEEN_${foundPucks.size}", pt, "QUEEN", radius = 24f))
-                    }
-                }
-                // 2. White Puck / Striker detection: High luminance across R, G, B
-                else if (r > 215 && g > 215 && b > 215) {
-                    val pt = PointF(x.toFloat(), y.toFloat())
-                    val isNearBaseline = abs(y - boardBounds.baselineY) < (boardBounds.boardSize * 0.12f)
-                    if (isNearBaseline && foundStriker == null) {
-                        foundStriker = pt
-                    } else if (foundPucks.none { hypot(it.position.x - pt.x, it.position.y - pt.y) < minClusterDist }) {
-                        foundPucks.add(VisionPuck("WHITE_${foundPucks.size}", pt, "WHITE", radius = 23f))
-                    }
-                }
-                // 3. Black / Dark Puck detection: Low brightness
-                else if (r < 65 && g < 65 && b < 65 && y > cTop + 30 && y < cBottom - 30) {
-                    val pt = PointF(x.toFloat(), y.toFloat())
-                    if (foundPucks.none { hypot(it.position.x - pt.x, it.position.y - pt.y) < minClusterDist }) {
-                        foundPucks.add(VisionPuck("BLACK_${foundPucks.size}", pt, "BLACK", radius = 23f))
-                    }
-                }
-            }
+            return scanBoardPixelsDirect(pixels, side, boardBounds)
+        } catch (_: Exception) {
+            return DetectedBoardVisionResult(isPlayerTurn = false, strikerPosition = null, targetPuckPosition = null)
         }
-
-        val finalStriker = foundStriker ?: PointF(
-            (boardBounds.baselineStartX + boardBounds.baselineEndX) / 2f,
-            boardBounds.baselineY
-        )
-
-        return DetectedBoardVisionResult(
-            strikerPosition = finalStriker,
-            detectedPucks = if (foundPucks.isNotEmpty()) foundPucks else listOf(
-                VisionPuck("QUEEN", boardBounds.boardCenter, "QUEEN", radius = 24f)
-            ),
-            isVisionCalibrated = true
-        )
     }
+
+    private data class PuckCandidate(
+        var gridX: Float,
+        var gridY: Float,
+        val type: PuckType,
+        var weight: Float
+    )
 }
 
 /**
- * Result data holder for vision puck and striker extraction.
- */
-data class DetectedBoardVisionResult(
-    val strikerPosition: PointF,
-    val detectedPucks: List<VisionPuck>,
-    val isVisionCalibrated: Boolean = true
-)
-
-/**
- * Precision Exponential Moving Average (EMA) Low-Pass Filter for Anti-Jitter Striker Smoothing:
- * - Formula: smoothedCoord = (currentCoord * alpha) + (previousCoord * (1 - alpha))
- * - Deadband hysteresis threshold: when delta < freezeThreshold, freezes coordinate firmly in place to eliminate micro-jitter or touch vibration.
- */
-class AntiJitterFilter(
-    var alpha: Float = 0.38f,
-    var freezeThreshold: Float = 1.4f
-) {
-    private var smoothedX: Float? = null
-    private var smoothedY: Float? = null
-    private var isLocked: Boolean = false
-
-    fun filter(input: PointF): PointF {
-        val currentX = input.x
-        val currentY = input.y
-
-        val prevX = smoothedX
-        val prevY = smoothedY
-
-        if (prevX == null || prevY == null) {
-            smoothedX = currentX
-            smoothedY = currentY
-            isLocked = false
-            return PointF(currentX, currentY)
-        }
-
-        val deltaX = currentX - prevX
-        val deltaY = currentY - prevY
-        val deltaDist = hypot(deltaX, deltaY)
-
-        // Deadband freeze: if micro-jitter is below threshold, freeze firmly in place with zero shaking
-        if (deltaDist < freezeThreshold) {
-            isLocked = true
-            return PointF(prevX, prevY)
-        }
-
-        isLocked = false
-        // Exponential Moving Average (EMA)
-        val newX = (currentX * alpha) + (prevX * (1f - alpha))
-        val newY = (currentY * alpha) + (prevY * (1f - alpha))
-
-        smoothedX = newX
-        smoothedY = newY
-        return PointF(newX, newY)
-    }
-
-    fun reset(initial: PointF? = null) {
-        if (initial != null) {
-            smoothedX = initial.x
-            smoothedY = initial.y
-        } else {
-            smoothedX = null
-            smoothedY = null
-        }
-        isLocked = false
-    }
-
-    fun isPositionLocked(): Boolean = isLocked
-    fun getSmoothedPoint(): PointF? = if (smoothedX != null && smoothedY != null) PointF(smoothedX!!, smoothedY!!) else null
-}
-
-/**
- * Real-time Board Telemetry Payload for Cloud AI Physics Server Synchronization.
- */
-data class BoardTelemetryPayload(
-    val timestamp: Long = System.currentTimeMillis(),
-    val turnSessionId: String,
-    val turnRemainingSec: Int,
-    val strikerBaselineX: Float,
-    val strikerBaselineY: Float,
-    val targetPuckX: Float,
-    val targetPuckY: Float,
-    val targetPuckType: String = "WHITE",
-    val pocketTargetName: String,
-    val pocketTargetX: Float,
-    val pocketTargetY: Float,
-    val boardSize: Float
-)
-
-/**
- * Precision Cloud AI Physics Solution containing verified bounce cushions,
- * dynamic impulse force, and trajectory confirmation.
+ * Cloud Physics Solution data class.
  */
 data class CloudPhysicsSolution(
     val solutionId: String,
-    val timestamp: Long = System.currentTimeMillis(),
-    val turnTimeRemainingSec: Int = 15,
+    val turnTimeRemainingSec: Int,
     val precisionAngleDeg: Float,
     val cutAngleDeg: Float,
-    val optimalBounceCushions: List<PointF> = emptyList(),
+    val optimalBounceCushions: List<PointF>,
     val requiredImpulseForceN: Float,
     val recommendedPowerPercent: Int,
     val dynamicPullbackDistancePx: Float,
@@ -1568,9 +961,7 @@ data class CloudPhysicsSolution(
 )
 
 /**
- * High-Speed Background WebSocket / HTTP AI Physics Sync Client:
- * - Syncs board telemetry continuously during the 15-second turn window.
- * - Computes and receives precision trajectory angles, optimal bounce cushions, and required strike impulse force.
+ * Background WebSocket / Network Physics Synchronization Client.
  */
 object CloudPhysicsSyncClient {
     private val clientScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -1602,10 +993,8 @@ object CloudPhysicsSyncClient {
         isTurnActive = true
         turnRemainingSeconds = 15
 
-        // Make sure WebSocket pipeline is active
         NetworkClient.initPipeline()
 
-        // Cancel previous countdown
         turnCountdownJob?.cancel()
         turnCountdownJob = clientScope.launch {
             while (isTurnActive && turnRemainingSeconds > 0) {
@@ -1618,7 +1007,6 @@ object CloudPhysicsSyncClient {
             }
         }
 
-        // Start continuous background telemetry sync
         syncJob?.cancel()
         syncJob = clientScope.launch {
             while (isTurnActive && isActive) {
@@ -1643,13 +1031,11 @@ object CloudPhysicsSyncClient {
                     pockets = pocketsList
                 )
 
-                // Dispatch to network WebSocket pipeline
                 NetworkClient.sendTelemetryPayload(telemetryRequest)
 
                 val latency = NetworkClient.liveLatencyMs.value
                 val serverPayload = NetworkClient.latestServerPayload.value
 
-                // If remote server fails, times out, or has high latency (>120ms), fallback to local math
                 val solution = if (serverPayload != null && !NetworkClient.isFallbackToLocal.value && latency <= 120L) {
                     CloudPhysicsSolution(
                         solutionId = serverPayload.responseId,
@@ -1667,22 +1053,21 @@ object CloudPhysicsSyncClient {
                         serverStatus = "CLOUD_AI_PHYSICS_SYNCED"
                     )
                 } else {
-                    // Local fallback computation
-                    computeCloudPhysicsSolution(
-                        BoardTelemetryPayload(
-                            turnSessionId = activeTurnSessionId,
-                            turnRemainingSec = turnRemainingSeconds,
-                            strikerBaselineX = striker.x,
-                            strikerBaselineY = striker.y,
-                            targetPuckX = targetPuck.x,
-                            targetPuckY = targetPuck.y,
-                            targetPuckType = "WHITE",
-                            pocketTargetName = pocketName,
-                            pocketTargetX = pocket.x,
-                            pocketTargetY = pocket.y,
-                            boardSize = boardBounds.boardSize
-                        ),
-                        boardBounds
+                    val localTraj = AimEngine.calculateGhostBallTrajectory(striker, targetPuck, boardBounds)
+                    CloudPhysicsSolution(
+                        solutionId = "LOCAL_${System.currentTimeMillis()}",
+                        turnTimeRemainingSec = turnRemainingSeconds,
+                        precisionAngleDeg = localTraj.angleDegrees,
+                        cutAngleDeg = localTraj.cutAngleDegrees,
+                        optimalBounceCushions = emptyList(),
+                        requiredImpulseForceN = localTraj.recommendedPower * 0.95f,
+                        recommendedPowerPercent = localTraj.recommendedPower,
+                        dynamicPullbackDistancePx = localTraj.dynamicPullbackDistancePx,
+                        forceCurveMultiplier = 1.0f,
+                        confidencePercent = 99,
+                        isVectorLocked = true,
+                        syncLatencyMs = 0L,
+                        serverStatus = "ON_DEVICE_PHYSICS_LOCKED"
                     )
                 }
 
@@ -1692,7 +1077,7 @@ object CloudPhysicsSyncClient {
                     onSolutionReceived?.invoke(solution)
                 }
 
-                delay(16L) // ~60 Hz continuous live physics telemetry synchronization
+                delay(20L) // ~50 Hz update
             }
         }
     }
@@ -1701,44 +1086,5 @@ object CloudPhysicsSyncClient {
         isTurnActive = false
         syncJob?.cancel()
         turnCountdownJob?.cancel()
-    }
-
-    private fun computeCloudPhysicsSolution(
-        telemetry: BoardTelemetryPayload,
-        bounds: CarromBoardBounds
-    ): CloudPhysicsSolution {
-        val dx = telemetry.targetPuckX - telemetry.strikerBaselineX
-        val dy = telemetry.targetPuckY - telemetry.strikerBaselineY
-        val directDist = hypot(dx, dy)
-        val angleDeg = (Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat() + 360f) % 360f
-
-        val pdx = telemetry.pocketTargetX - telemetry.targetPuckX
-        val pdy = telemetry.pocketTargetY - telemetry.targetPuckY
-        val puckToPocketAngle = (Math.toDegrees(atan2(pdy.toDouble(), pdx.toDouble())).toFloat() + 360f) % 360f
-        val cutAngle = abs(angleDeg - puckToPocketAngle)
-
-        // Calculate dynamic impulse force in Newtons and non-linear power curve
-        val impulseForceN = (directDist * 0.048f + cutAngle * 0.12f + 12f).coerceIn(15f, 95f)
-        val powerPercent = ((impulseForceN / 95f) * 100f).toInt().coerceIn(30, 100)
-        val pullbackPx = (powerPercent / 100f) * 175f
-
-        return CloudPhysicsSolution(
-            solutionId = "SOL_${System.currentTimeMillis()}",
-            turnTimeRemainingSec = telemetry.turnRemainingSec,
-            precisionAngleDeg = angleDeg,
-            cutAngleDeg = cutAngle,
-            optimalBounceCushions = listOf(
-                PointF(bounds.cushionLeft, bounds.cushionTop + bounds.boardSize * 0.4f),
-                PointF(bounds.cushionRight, bounds.cushionTop + bounds.boardSize * 0.4f)
-            ),
-            requiredImpulseForceN = impulseForceN,
-            recommendedPowerPercent = powerPercent,
-            dynamicPullbackDistancePx = pullbackPx,
-            forceCurveMultiplier = 1.05f,
-            confidencePercent = 99,
-            isVectorLocked = true,
-            syncLatencyMs = 6L,
-            serverStatus = "CLOUD_AI_PHYSICS_SYNCED"
-        )
     }
 }

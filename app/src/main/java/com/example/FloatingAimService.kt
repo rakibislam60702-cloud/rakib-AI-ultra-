@@ -22,16 +22,18 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
+import android.animation.ValueAnimator
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.*
+import android.view.animation.DecelerateInterpolator
 import android.widget.*
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlin.math.abs
+import kotlin.math.*
 
 class FloatingAimService : Service() {
 
@@ -43,33 +45,35 @@ class FloatingAimService : Service() {
     // =========================================================================
     // LIGHTWEIGHT MEMORY-ONLY MEDIA PROJECTION & IMAGE READER VISION ENGINE
     // =========================================================================
+
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var imageProcessingThread: HandlerThread? = null
     private var imageProcessingHandler: Handler? = null
 
-    // Frame Throttling: 20 FPS Max (~50ms interval) for zero-lag vision processing
+    // Frame Throttling: 25 FPS (~40ms interval) on dedicated background HandlerThread
     private var lastFrameProcessedTimestamp = 0L
-    private val MIN_FRAME_INTERVAL_MS = 50L // 20 checks/second
+    private val MIN_FRAME_INTERVAL_MS = 40L // 25 FPS
     private var isProcessingFrame = false
+    private var reuseBoardPixels: IntArray? = null
     private var reuseBitmap: Bitmap? = null
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private val idleHandler = Handler(Looper.getMainLooper())
     private val idleFadeRunnable = Runnable {
-        val menu = floatingView?.findViewById<LinearLayout>(R.id.floating_menu_container)
-        if (menu == null || menu.visibility != View.VISIBLE) {
-            floatingView?.animate()?.alpha(0.30f)?.setDuration(400)?.start()
+        val drawer = floatingView?.findViewById<LinearLayout>(R.id.compact_settings_drawer)
+        if (drawer == null || drawer.visibility != View.VISIBLE) {
+            floatingView?.animate()?.alpha(0.65f)?.setDuration(350)?.start()
         }
     }
 
-    private fun resetIdleFade(menuVisible: Boolean = false) {
+    private fun resetIdleFade(drawerVisible: Boolean = false) {
         idleHandler.removeCallbacks(idleFadeRunnable)
         floatingView?.animate()?.alpha(1.0f)?.setDuration(150)?.start()
-        if (!menuVisible) {
-            idleHandler.postDelayed(idleFadeRunnable, 3000L)
+        if (!drawerVisible) {
+            idleHandler.postDelayed(idleFadeRunnable, 4000L)
         }
     }
 
@@ -173,15 +177,16 @@ class FloatingAimService : Service() {
     }
 
     /**
-     * Processes frames with strict throttling (~50ms / 20 FPS max) and immediate closing:
+     * Processes frames with strict throttling (~40ms / 25 FPS) and immediate closing:
      * - Discards excess frames instantly to maintain 0% CPU overhead when idle.
-     * - Memory-only Direct Pixel buffer extraction without file I/O or disk caching.
+     * - Direct int[] pixel buffer extraction strictly mapped to 1:1 Carrom Board square.
+     * - Dispatches deterministic striker, target puck, and isPlayerTurn status to AimOverlayView.
      * - Always calls image.close() inside a try-finally block to prevent memory leaks or GC stalls.
      */
     private fun processImageReaderFrame(reader: ImageReader, targetW: Int, targetH: Int) {
         val now = SystemClock.elapsedRealtime()
 
-        // Throttle check: Skip frame if within 50ms interval or already processing
+        // Throttle check: Skip frame if within 40ms interval or already processing
         if (now - lastFrameProcessedTimestamp < MIN_FRAME_INTERVAL_MS || isProcessingFrame || isPaused) {
             // Drain and close immediately
             try {
@@ -214,48 +219,48 @@ class FloatingAimService : Service() {
             val currentFrameBmp = reuseBitmap
 
             if (currentFrameBmp != null) {
-                // Pass lightweight downscaled frame to Vision Engine
                 val metrics = DisplayMetrics()
                 windowManager.defaultDisplay.getRealMetrics(metrics)
                 val fullBoardBounds = AimEngine.calculateBoardBounds(metrics.widthPixels.toFloat(), metrics.heightPixels.toFloat())
 
-                // Scale down board bounds to match 50% viewport
+                // Crop & extract raw pixel buffer strictly mapped to the 1:1 board square
                 val scaleFactor = targetW.toFloat() / metrics.widthPixels.toFloat()
-                val scaledBounds = CarromBoardBounds(
-                    boardSize = fullBoardBounds.boardSize * scaleFactor,
-                    boardLeft = fullBoardBounds.boardLeft * scaleFactor,
-                    boardTop = fullBoardBounds.boardTop * scaleFactor,
-                    boardRight = fullBoardBounds.boardRight * scaleFactor,
-                    boardBottom = fullBoardBounds.boardBottom * scaleFactor,
-                    cushionLeft = fullBoardBounds.cushionLeft * scaleFactor,
-                    cushionTop = fullBoardBounds.cushionTop * scaleFactor,
-                    cushionRight = fullBoardBounds.cushionRight * scaleFactor,
-                    cushionBottom = fullBoardBounds.cushionBottom * scaleFactor,
-                    baselineY = fullBoardBounds.baselineY * scaleFactor,
-                    baselineStartX = fullBoardBounds.baselineStartX * scaleFactor,
-                    baselineEndX = fullBoardBounds.baselineEndX * scaleFactor,
-                    pockets = fullBoardBounds.pockets.mapValues { (_, pt) ->
-                        PointF(pt.x * scaleFactor, pt.y * scaleFactor)
-                    },
-                    pocketRadius = fullBoardBounds.pocketRadius * scaleFactor,
-                    boardCenter = PointF(fullBoardBounds.boardCenter.x * scaleFactor, fullBoardBounds.boardCenter.y * scaleFactor)
-                )
+                val scaledBoardSize = (fullBoardBounds.boardSize * scaleFactor).toInt()
+                val scaledBoardLeft = (fullBoardBounds.boardLeft * scaleFactor).toInt().coerceAtLeast(0)
+                val scaledBoardTop = (fullBoardBounds.boardTop * scaleFactor).toInt().coerceAtLeast(0)
 
-                val detection = AimEngine.detectBoardEntitiesFromViewport(currentFrameBmp, scaledBounds)
+                val validBoardSide = min(scaledBoardSize, min(targetW - scaledBoardLeft, targetH - scaledBoardTop))
 
-                // Dispatch to Overlay View on Main Thread smoothly
-                Handler(Looper.getMainLooper()).post {
-                    if (detection.isVisionCalibrated && aimOverlayView != null) {
-                        val invScale = 1.0f / scaleFactor
-                        val fullStrikerX = detection.strikerPosition.x * invScale
-                        val fullStrikerY = detection.strikerPosition.y * invScale
-                        aimOverlayView?.updateLiveStrikerPosition(fullStrikerX, fullStrikerY)
+                if (validBoardSide > 100) {
+                    val pixelCount = validBoardSide * validBoardSide
+                    if (reuseBoardPixels == null || reuseBoardPixels?.size != pixelCount) {
+                        reuseBoardPixels = IntArray(pixelCount)
+                    }
+                    val boardPixels = reuseBoardPixels!!
 
-                        val firstTargetPuck = detection.detectedPucks.firstOrNull()
-                        if (firstTargetPuck != null) {
-                            val fullPuckX = firstTargetPuck.position.x * invScale
-                            val fullPuckY = firstTargetPuck.position.y * invScale
-                            aimOverlayView?.updateLiveCoinPosition(fullPuckX, fullPuckY)
+                    currentFrameBmp.getPixels(
+                        boardPixels,
+                        0,
+                        validBoardSide,
+                        scaledBoardLeft,
+                        scaledBoardTop,
+                        validBoardSide,
+                        validBoardSide
+                    )
+
+                    // Execute deterministic 2D pixel scan on background thread
+                    val detection = AimEngine.scanBoardPixelsDirect(boardPixels, validBoardSide, fullBoardBounds)
+
+                    // Dispatch to Overlay View on Main Thread smoothly
+                    Handler(Looper.getMainLooper()).post {
+                        if (aimOverlayView != null) {
+                            aimOverlayView?.updateVisionDetection(
+                                isTurn = detection.isPlayerTurn,
+                                striker = detection.strikerPosition,
+                                puck = detection.targetPuckPosition,
+                                pocket = detection.targetPocket,
+                                pocketName = detection.targetPocketName
+                            )
                         }
                     }
                 }
@@ -329,6 +334,12 @@ class FloatingAimService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
+        val metrics = DisplayMetrics()
+        windowManager.defaultDisplay.getRealMetrics(metrics)
+        val screenWidth = metrics.widthPixels
+        val screenHeight = metrics.heightPixels
+
+        // Compact side dock layout params
         val hudParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -337,129 +348,156 @@ class FloatingAimService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 50
-            y = 200
+            x = 0 // Cleanly docked to the left edge by default
+            y = (screenHeight * 0.35f).toInt()
         }
 
         floatingView = LayoutInflater.from(this).inflate(R.layout.layout_floating_widget, null)
         windowManager.addView(floatingView, hudParams)
 
-        val bubbleIcon = floatingView!!.findViewById<ImageView>(R.id.floating_bubble_icon)
-        val menuContainer = floatingView!!.findViewById<LinearLayout>(R.id.floating_menu_container)
-        val switchMatch = floatingView!!.findViewById<Switch>(R.id.switch_match_active)
-        val switchAutoPlay = floatingView!!.findViewById<Switch>(R.id.switch_auto_play)
-        val switchFastMode = floatingView!!.findViewById<Switch>(R.id.switch_fast_mode)
-        val btnTriggerStrike = floatingView!!.findViewById<Button>(R.id.btn_trigger_auto_strike)
-        val switchCenter = floatingView!!.findViewById<Switch>(R.id.switch_center_target)
+        val pillBarContainer = floatingView!!.findViewById<LinearLayout>(R.id.pill_bar_container)
+        val btnAutoPlay = floatingView!!.findViewById<LinearLayout>(R.id.btn_auto_play_pill)
+        val ledStatus = floatingView!!.findViewById<View>(R.id.led_status_indicator)
+        val iconPlayPause = floatingView!!.findViewById<ImageView>(R.id.icon_play_pause)
+        val tvAutoPlayLabel = floatingView!!.findViewById<TextView>(R.id.tv_auto_play_label)
+
+        val btnRakibUltra = floatingView!!.findViewById<LinearLayout>(R.id.btn_rakib_ultra_pill)
+        val tvDrawerChevron = floatingView!!.findViewById<TextView>(R.id.tv_drawer_chevron)
+        val compactDrawer = floatingView!!.findViewById<LinearLayout>(R.id.compact_settings_drawer)
+        val btnCloseDrawer = floatingView!!.findViewById<TextView>(R.id.btn_close_drawer)
+
         val seekThickness = floatingView!!.findViewById<SeekBar>(R.id.seekbar_thickness)
-        val seekStriker = floatingView!!.findViewById<SeekBar>(R.id.seekbar_striker_slider)
-        val btnPause = floatingView!!.findViewById<Button>(R.id.btn_pause_tracking)
+        val btnCyan = floatingView!!.findViewById<Button>(R.id.btn_color_cyan)
+        val btnGold = floatingView!!.findViewById<Button>(R.id.btn_color_gold)
+        val btnRed = floatingView!!.findViewById<Button>(R.id.btn_color_red)
+        val btnGreen = floatingView!!.findViewById<Button>(R.id.btn_color_green)
+        val btnToggleLines = floatingView!!.findViewById<Button>(R.id.btn_toggle_aim_lines)
 
-        // বাবল ড্র্যাগ, সিঙ্গেল ট্যাপ (টগল গাইডলাইন), ডাবল ট্যাপ (মেইন HUD ডায়লগ) এবং ৩-সেকেন্ড আইডল ফেড
-        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                // Single Tap: Toggle trajectory guidelines visibility instantly (Show / Hide lines)
-                val currentlyVisible = (aimOverlayView?.visibility == View.VISIBLE)
-                val nextVisible = !currentlyVisible
-                aimOverlayView?.setMatchMode(nextVisible)
-                aimOverlayView?.visibility = if (nextVisible && !isPaused) View.VISIBLE else View.GONE
-                if (nextVisible) {
-                    aimOverlayView?.wakeRenderingEngine()
-                    Toast.makeText(this@FloatingAimService, "🎯 Aim Lines: VISIBLE", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this@FloatingAimService, "👁️ Aim Lines: HIDDEN", Toast.LENGTH_SHORT).show()
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop.toFloat()
+
+        // Edge-Snapping Animator to cleanly dock widget to Left or Right screen edge
+        fun snapToNearestEdge() {
+            val pillWidth = pillBarContainer.width.takeIf { it > 0 } ?: (122 * resources.displayMetrics.density).toInt()
+            val totalWidth = if (compactDrawer.visibility == View.VISIBLE) {
+                floatingView?.width ?: pillWidth
+            } else {
+                pillWidth
+            }
+
+            val currentX = hudParams.x
+            val midPoint = currentX + (totalWidth / 2)
+            val targetX = if (midPoint < screenWidth / 2) {
+                0 // Snap flush to the Left edge
+            } else {
+                (screenWidth - totalWidth).coerceAtLeast(0) // Snap flush to the Right edge
+            }
+
+            val animator = ValueAnimator.ofInt(currentX, targetX).apply {
+                duration = 200L
+                interpolator = DecelerateInterpolator()
+                addUpdateListener { anim ->
+                    hudParams.x = anim.animatedValue as Int
+                    try {
+                        windowManager.updateViewLayout(floatingView, hudParams)
+                    } catch (_: Exception) {}
                 }
-                switchMatch.isChecked = nextVisible
-                resetIdleFade(menuContainer.visibility == View.VISIBLE)
-                return true
             }
-
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                // Double Tap: Open the main HUD settings dialog (switch between Auto-Play & pure Manual mode)
-                val isMenuOpen = menuContainer.visibility == View.VISIBLE
-                val willOpen = !isMenuOpen
-                menuContainer.visibility = if (willOpen) View.VISIBLE else View.GONE
-                resetIdleFade(willOpen)
-                return true
-            }
-        })
-
-        bubbleIcon.setOnTouchListener(object : View.OnTouchListener {
-            private var initialX = 0
-            private var initialY = 0
-            private var initialTouchX = 0f
-            private var initialTouchY = 0f
-            private var isDragging = false
-
-            override fun onTouch(v: View, event: MotionEvent): Boolean {
-                resetIdleFade(menuContainer.visibility == View.VISIBLE)
-                gestureDetector.onTouchEvent(event)
-
-                when (event.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        initialX = hudParams.x
-                        initialY = hudParams.y
-                        initialTouchX = event.rawX
-                        initialTouchY = event.rawY
-                        isDragging = false
-                        return true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = event.rawX - initialTouchX
-                        val dy = event.rawY - initialTouchY
-                        if (abs(dx) > 10 || abs(dy) > 10) {
-                            isDragging = true
-                        }
-                        if (isDragging) {
-                            hudParams.x = initialX + dx.toInt()
-                            hudParams.y = initialY + dy.toInt()
-                            windowManager.updateViewLayout(floatingView, hudParams)
-                        }
-                        return true
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        resetIdleFade(menuContainer.visibility == View.VISIBLE)
-                        return true
-                    }
-                }
-                return false
-            }
-        })
-
-        // মেনু কন্টেইনারে যেকোনো ইন্টারঅ্যাকশনে আইডল টাইমার রিসেট হবে
-        menuContainer.setOnTouchListener { _, _ ->
-            resetIdleFade(true)
-            false
+            animator.start()
         }
 
-        // শুধু ম্যাচ শুরু হলেই দাগ স্ক্রিনে আসবে
-        switchMatch.setOnCheckedChangeListener { _, isChecked ->
-            resetIdleFade(menuContainer.visibility == View.VISIBLE)
-            aimOverlayView?.setMatchMode(isChecked)
-            aimOverlayView?.visibility = if (isChecked && !isPaused) View.VISIBLE else View.GONE
+        // Draggable touch handler cleanly separating click events from dragging
+        fun createDraggableTouchListener(onSingleTap: () -> Unit): View.OnTouchListener {
+            return object : View.OnTouchListener {
+                private var initialX = 0
+                private var initialY = 0
+                private var initialTouchX = 0f
+                private var initialTouchY = 0f
+                private var isDragging = false
+                private var downTime = 0L
+
+                override fun onTouch(v: View, event: MotionEvent): Boolean {
+                    resetIdleFade(compactDrawer.visibility == View.VISIBLE)
+                    when (event.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            initialX = hudParams.x
+                            initialY = hudParams.y
+                            initialTouchX = event.rawX
+                            initialTouchY = event.rawY
+                            isDragging = false
+                            downTime = System.currentTimeMillis()
+                            v.isPressed = true
+                            return true
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            val dx = event.rawX - initialTouchX
+                            val dy = event.rawY - initialTouchY
+                            if (hypot(dx.toDouble(), dy.toDouble()) > touchSlop) {
+                                isDragging = true
+                                v.isPressed = false
+                            }
+                            if (isDragging) {
+                                hudParams.x = (initialX + dx.toInt()).coerceIn(-50, screenWidth + 50)
+                                val widgetH = floatingView?.height ?: 200
+                                val minY = 40
+                                val maxY = (screenHeight - widgetH).coerceAtLeast(minY)
+                                hudParams.y = (initialY + dy.toInt()).coerceIn(minY, maxY)
+                                try {
+                                    windowManager.updateViewLayout(floatingView, hudParams)
+                                } catch (_: Exception) {}
+                            }
+                            return true
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            v.isPressed = false
+                            val elapsed = System.currentTimeMillis() - downTime
+                            if (!isDragging && elapsed < 400L) {
+                                v.performClick()
+                                onSingleTap.invoke()
+                            } else if (isDragging) {
+                                snapToNearestEdge()
+                            }
+                            return true
+                        }
+                        MotionEvent.ACTION_CANCEL -> {
+                            v.isPressed = false
+                            if (isDragging) {
+                                snapToNearestEdge()
+                            }
+                            return true
+                        }
+                    }
+                    return false
+                }
+            }
         }
 
-        // স্ট্রাইকার বেসলাইন স্লাইডার লিসেনার (৬০ FPS লাইভ পজিশনিং)
-        seekStriker?.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                resetIdleFade(menuContainer.visibility == View.VISIBLE)
-                aimOverlayView?.setStrikerBaselineSliderRatio(progress / 100f)
+        // Helper to update the Auto-Play pill visual states (LED, Icon, Label)
+        fun updateAutoPlayUI(isActive: Boolean) {
+            if (isActive) {
+                ledStatus.setBackgroundResource(R.drawable.bg_led_green)
+                iconPlayPause.setImageResource(R.drawable.ic_pause)
+                tvAutoPlayLabel.text = "AUTO"
+                tvAutoPlayLabel.setTextColor(Color.parseColor("#00E676"))
+            } else {
+                ledStatus.setBackgroundResource(R.drawable.bg_led_red)
+                iconPlayPause.setImageResource(R.drawable.ic_play_arrow)
+                tvAutoPlayLabel.text = "MANUAL"
+                tvAutoPlayLabel.setTextColor(Color.WHITE)
             }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {
-                resetIdleFade(true)
-            }
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                resetIdleFade(menuContainer.visibility == View.VISIBLE)
-            }
-        })
+        }
 
-        // Auto-Play Strike Switch with Accessibility Verification
-        switchAutoPlay.setOnCheckedChangeListener { buttonView, isChecked ->
-            resetIdleFade(menuContainer.visibility == View.VISIBLE)
-            if (isChecked) {
+        // Initialize state
+        updateAutoPlayUI(AimEngine.isAutoPlayActive)
+
+        // 1. TOP BUTTON: Auto-Play Toggle Pill
+        btnAutoPlay.setOnTouchListener(createDraggableTouchListener {
+            resetIdleFade(compactDrawer.visibility == View.VISIBLE)
+            val nextState = !AimEngine.isAutoPlayActive
+
+            if (nextState) {
+                // Verify Accessibility permission before activating hands-free Auto-Strike
                 if (!AutoStrikeAccessibilityService.isAccessibilitySettingsOn(this@FloatingAimService)) {
-                    buttonView.isChecked = false
-                    btnTriggerStrike?.visibility = View.GONE
+                    updateAutoPlayUI(false)
                     Toast.makeText(
                         this@FloatingAimService,
                         "⚠️ Please enable 'AutoStrike Service' in Accessibility Settings",
@@ -473,112 +511,113 @@ class FloatingAimService : Service() {
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
-                    return@setOnCheckedChangeListener
+                    return@createDraggableTouchListener
                 }
 
                 AimEngine.isAutoPlayActive = true
                 aimOverlayView?.isAutoPlayActive = true
                 aimOverlayView?.wakeRenderingEngine()
-                btnTriggerStrike?.visibility = View.VISIBLE
-                Toast.makeText(this@FloatingAimService, "⚡ Auto-Play Strike Active", Toast.LENGTH_SHORT).show()
+                updateAutoPlayUI(true)
+                Toast.makeText(this@FloatingAimService, "⚡ Auto-Play Active: Hands-Free Slingshot ON", Toast.LENGTH_SHORT).show()
             } else {
                 AimEngine.isAutoPlayActive = false
                 aimOverlayView?.isAutoPlayActive = false
-                btnTriggerStrike?.visibility = View.GONE
+                updateAutoPlayUI(false)
+                Toast.makeText(this@FloatingAimService, "✋ Manual Mode: Play with your fingers", Toast.LENGTH_SHORT).show()
             }
-        }
+        })
 
-        switchFastMode?.setOnCheckedChangeListener { _, isChecked ->
-            resetIdleFade(menuContainer.visibility == View.VISIBLE)
-            AimEngine.isFastModeActive = isChecked
-            aimOverlayView?.isFastMode = isChecked
-            val modeMsg = if (isChecked) "⚡ Fast Mode (80ms Strike): ON" else "Standard Strike Mode: ON"
-            Toast.makeText(this@FloatingAimService, modeMsg, Toast.LENGTH_SHORT).show()
-        }
+        // 2. BOTTOM BUTTON: "Rakib Ultra" Pill (Expands/Collapses Compact Drawer)
+        fun toggleDrawer() {
+            resetIdleFade(true)
+            val willOpen = (compactDrawer.visibility != View.VISIBLE)
+            compactDrawer.visibility = if (willOpen) View.VISIBLE else View.GONE
+            tvDrawerChevron.text = if (willOpen) "◀" else "⚙"
 
-        // Instant Auto-Strike Manual Trigger Button
-        btnTriggerStrike?.setOnClickListener {
-            resetIdleFade(menuContainer.visibility == View.VISIBLE)
-            if (!AutoStrikeAccessibilityService.isAccessibilitySettingsOn(this@FloatingAimService)) {
-                Toast.makeText(
-                    this@FloatingAimService,
-                    "⚠️ Please enable Accessibility Service in Settings",
-                    Toast.LENGTH_LONG
-                ).show()
-                try {
-                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // Adjust position if expanding near the right screen edge
+            if (willOpen) {
+                floatingView?.post {
+                    val currentRight = hudParams.x + (floatingView?.width ?: 0)
+                    if (currentRight > screenWidth) {
+                        hudParams.x = (screenWidth - (floatingView?.width ?: 0)).coerceAtLeast(0)
+                        try {
+                            windowManager.updateViewLayout(floatingView, hudParams)
+                        } catch (_: Exception) {}
                     }
-                    startActivity(intent)
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 }
-                return@setOnClickListener
-            }
-
-            aimOverlayView?.triggerAutoStrike { success ->
-                if (success) {
-                    Toast.makeText(this@FloatingAimService, "🎯 Strike Fired!", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this@FloatingAimService, "Strike cancelled or service unavailable", Toast.LENGTH_SHORT).show()
-                }
+            } else {
+                snapToNearestEdge()
             }
         }
 
-        switchCenter.setOnCheckedChangeListener { _, isChecked ->
-            resetIdleFade(menuContainer.visibility == View.VISIBLE)
-            AimEngine.isCenterBullseyeActive = isChecked
-            aimOverlayView?.config = aimOverlayView?.config?.copy(isCenterTargetGuideEnabled = isChecked) ?: AimEngineConfig()
-            aimOverlayView?.invalidate()
+        btnRakibUltra.setOnTouchListener(createDraggableTouchListener {
+            toggleDrawer()
+        })
+
+        pillBarContainer.setOnTouchListener(createDraggableTouchListener {
+            toggleDrawer()
+        })
+
+        btnCloseDrawer.setOnClickListener {
+            compactDrawer.visibility = View.GONE
+            tvDrawerChevron.text = "⚙"
+            resetIdleFade(false)
+            snapToNearestEdge()
         }
 
+        // 3. COMPACT SLIDING DRAWER SETTINGS
+        // Line Thickness Slider
         seekThickness.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(p0: SeekBar?, p1: Int, p2: Boolean) {
-                resetIdleFade(menuContainer.visibility == View.VISIBLE)
+            override fun onProgressChanged(p0: SeekBar?, p1: Int, fromUser: Boolean) {
+                resetIdleFade(true)
                 aimOverlayView?.setLaserThickness((p1 + 2).toFloat())
             }
             override fun onStartTrackingTouch(p0: SeekBar?) {
                 resetIdleFade(true)
             }
             override fun onStopTrackingTouch(p0: SeekBar?) {
-                resetIdleFade(menuContainer.visibility == View.VISIBLE)
+                resetIdleFade(true)
             }
         })
 
-        // কালার সিলেকশন - Cyan (#00E5FF), Yellow (#FFD600), Red (#FF1744), Neon Green (#00E676)
-        floatingView!!.findViewById<Button>(R.id.btn_color_cyan).setOnClickListener {
-            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+        // Laser Color Palette: Cyan, Yellow, Red, Green
+        btnCyan.setOnClickListener {
+            resetIdleFade(true)
             aimOverlayView?.setLaserColor(Color.parseColor("#00E5FF"))
-            Toast.makeText(this@FloatingAimService, "🎨 Laser Color: Cyan (#00E5FF)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@FloatingAimService, "🎨 Cyan Laser", Toast.LENGTH_SHORT).show()
         }
-        floatingView!!.findViewById<Button>(R.id.btn_color_gold).setOnClickListener {
-            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+        btnGold.setOnClickListener {
+            resetIdleFade(true)
             aimOverlayView?.setLaserColor(Color.parseColor("#FFD600"))
-            Toast.makeText(this@FloatingAimService, "🎨 Laser Color: Yellow (#FFD600)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@FloatingAimService, "🎨 Yellow Laser", Toast.LENGTH_SHORT).show()
         }
-        floatingView!!.findViewById<Button>(R.id.btn_color_red).setOnClickListener {
-            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+        btnRed.setOnClickListener {
+            resetIdleFade(true)
             aimOverlayView?.setLaserColor(Color.parseColor("#FF1744"))
-            Toast.makeText(this@FloatingAimService, "🎨 Laser Color: Red (#FF1744)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@FloatingAimService, "🎨 Red Laser", Toast.LENGTH_SHORT).show()
         }
-        floatingView!!.findViewById<Button>(R.id.btn_color_green).setOnClickListener {
-            resetIdleFade(menuContainer.visibility == View.VISIBLE)
+        btnGreen.setOnClickListener {
+            resetIdleFade(true)
             aimOverlayView?.setLaserColor(Color.parseColor("#00E676"))
-            Toast.makeText(this@FloatingAimService, "🎨 Laser Color: Neon Green (#00E676)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@FloatingAimService, "🎨 Green Laser", Toast.LENGTH_SHORT).show()
         }
 
-        // পজ বাটন - স্ক্রিন বন্ধ হবে না, শুধু ট্র্যাকিং পজ থাকবে
-        btnPause.setOnClickListener {
-            resetIdleFade(menuContainer.visibility == View.VISIBLE)
-            isPaused = !isPaused
-            if (isPaused) {
-                aimOverlayView?.visibility = View.GONE
-                btnPause.text = "RESUME TRACKING"
-                btnPause.setBackgroundColor(Color.parseColor("#D50000"))
+        // Toggle Aim Lines (Visible / Hidden)
+        var areLinesVisible = true
+        btnToggleLines.setOnClickListener {
+            resetIdleFade(true)
+            areLinesVisible = !areLinesVisible
+            aimOverlayView?.setMatchMode(areLinesVisible)
+            aimOverlayView?.visibility = if (areLinesVisible && !isPaused) View.VISIBLE else View.GONE
+            if (areLinesVisible) {
+                aimOverlayView?.wakeRenderingEngine()
+                btnToggleLines.text = "HIDE AIM LINES"
+                btnToggleLines.setBackgroundColor(Color.parseColor("#263238"))
+                Toast.makeText(this@FloatingAimService, "🎯 Aim Lines: ON", Toast.LENGTH_SHORT).show()
             } else {
-                if (switchMatch.isChecked) aimOverlayView?.visibility = View.VISIBLE
-                btnPause.text = "PAUSE TRACKING"
-                btnPause.setBackgroundColor(Color.parseColor("#263238"))
+                btnToggleLines.text = "SHOW AIM LINES"
+                btnToggleLines.setBackgroundColor(Color.parseColor("#00838F"))
+                Toast.makeText(this@FloatingAimService, "👁️ Aim Lines: OFF", Toast.LENGTH_SHORT).show()
             }
         }
     }
