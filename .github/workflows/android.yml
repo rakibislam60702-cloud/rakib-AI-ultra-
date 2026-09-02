@@ -19,22 +19,36 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Setup Gradle Wrapper
+    - name: Configure Keystore and Permissions
       run: |
-        # Gradle 8.10 এ আপগ্রেড করা যেন VersionCheckPlugin পাস করে
-        wget -q https://services.gradle.org/distributions/gradle-8.10-bin.zip
-        unzip -q gradle-8.10-bin.zip
-        ./gradle-8.10/bin/gradle wrapper --gradle-version 8.10
-        chmod +x gradlew
-
-    - name: Build Debug APK
-      run: |
-        # Android Debug Keystore সেটআপ
         mkdir -p ~/.android
         keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+        chmod +x gradlew
 
-        # বিল্ড এক্সিকিউশন
-        ./gradlew assembleDebug --no-daemon --stacktrace --warning-mode all
+    - name: Auto-Detect Gradle and Build Debug APK
+      run: |
+        # প্রথমবার বিল্ড চালানো
+        set +e
+        BUILD_LOG=$(./gradlew assembleDebug --no-daemon 2>&1)
+        EXIT_CODE=$?
+        echo "$BUILD_LOG"
+
+        # যদি VersionCheckPlugin কোনো নির্দিষ্ট ভার্সন দাবি করে, তবে স্বয়ংক্রিয়ভাবে তা সেট করে পুনরায় বিল্ড নেওয়া
+        if [ $EXIT_CODE -ne 0 ]; then
+          REQUIRED_GRADLE=$(echo "$BUILD_LOG" | grep -o -E 'Minimum supported Gradle version is [0-9.]+' | head -n 1 | awk '{print $NF}')
+          
+          if [ -n "$REQUIRED_GRADLE" ]; then
+            echo "========================================================"
+            echo ">> Auto-Fix: Upgrading Gradle wrapper to required version: $REQUIRED_GRADLE"
+            echo "========================================================"
+            sed -i -E "s|distributionUrl=.*|distributionUrl=https\\\\://services.gradle.org/distributions/gradle-${REQUIRED_GRADLE}-bin.zip|" gradle/wrapper/gradle-wrapper.properties
+            
+            # সংশোধিত ভার্সন দিয়ে পুনরায় বিল্ড
+            ./gradlew assembleDebug --no-daemon --stacktrace
+            exit $?
+          fi
+          exit $EXIT_CODE
+        fi
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
