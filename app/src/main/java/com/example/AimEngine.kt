@@ -894,7 +894,35 @@ object AimEngine {
             .maxByOrNull { it.confidenceScore }
             ?: solutions.maxByOrNull { it.confidenceScore }
     }
+
+    fun distancePointToSegment(
+        px: Float, py: Float,
+        x1: Float, y1: Float,
+        x2: Float, y2: Float
+    ): Float {
+        val l2 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)
+        if (l2 == 0f) return Math.hypot((px - x1).toDouble(), (py - y1).toDouble()).toFloat()
+        var t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2
+        t = Math.max(0f, Math.min(1f, t))
+        val projX = x1 + t * (x2 - x1)
+        val projY = y1 + t * (y2 - y1)
+        return Math.hypot((px - projX).toDouble(), (py - projY).toDouble()).toFloat()
+    }
+
+    fun distancePointToSegment(p: PointF, a: PointF, b: PointF): Float {
+        return distancePointToSegment(p.x, p.y, a.x, a.y, b.x, b.y)
+    }
 }
+
+fun distancePointToSegment(
+    px: Float, py: Float,
+    x1: Float, y1: Float,
+    x2: Float, y2: Float
+): Float = AimEngine.distancePointToSegment(px, py, x1, y1, x2, y2)
+
+fun distancePointToSegment(p: PointF, a: PointF, b: PointF): Float =
+    AimEngine.distancePointToSegment(p, a, b)
+
 
 
 /**
