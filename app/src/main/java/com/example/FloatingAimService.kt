@@ -1,5 +1,6 @@
 package com.example
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
@@ -7,23 +8,12 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.PointF
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
-import android.media.Image
-import android.media.ImageReader
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
-import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
-import android.animation.ValueAnimator
-import android.os.SystemClock
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
@@ -41,23 +31,6 @@ class FloatingAimService : Service() {
     private var floatingView: View? = null
     private var aimOverlayView: AimOverlayView? = null
     private var isPaused = false
-
-    // =========================================================================
-    // LIGHTWEIGHT MEMORY-ONLY MEDIA PROJECTION & IMAGE READER VISION ENGINE
-    // =========================================================================
-
-    private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var imageReader: ImageReader? = null
-    private var imageProcessingThread: HandlerThread? = null
-    private var imageProcessingHandler: Handler? = null
-
-    // Frame Throttling: 25 FPS (~40ms interval) on dedicated background HandlerThread
-    private var lastFrameProcessedTimestamp = 0L
-    private val MIN_FRAME_INTERVAL_MS = 40L // 25 FPS
-    private var isProcessingFrame = false
-    private var reuseBoardPixels: IntArray? = null
-    private var reuseBitmap: Bitmap? = null
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -82,26 +55,11 @@ class FloatingAimService : Service() {
         private const val NOTIFICATION_CHANNEL_ID = "rakib_aim_hud_channel"
         private const val NOTIFICATION_ID = 1001
         val isServiceRunning = MutableStateFlow(false)
-
-        // MediaProjection token holder
-        var mediaProjectionResultCode: Int = Activity.RESULT_CANCELED
-        var mediaProjectionResultData: Intent? = null
-
-        fun setMediaProjectionPermission(resultCode: Int, data: Intent?) {
-            mediaProjectionResultCode = resultCode
-            mediaProjectionResultData = data
-        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val resultCode = intent?.getIntExtra("mp_result_code", mediaProjectionResultCode) ?: mediaProjectionResultCode
-        val resultData: Intent? = intent?.getParcelableExtra("mp_result_data") ?: mediaProjectionResultData
-
-        if (resultCode == Activity.RESULT_OK && resultData != null && mediaProjection == null) {
-            initMediaProjectionCapture(resultCode, resultData)
-        }
         return START_STICKY
     }
 
@@ -115,165 +73,6 @@ class FloatingAimService : Service() {
         setupAimOverlayCanvas()
         setupFloatingHUDWidget()
         resetIdleFade(false)
-
-        if (mediaProjectionResultCode == Activity.RESULT_OK && mediaProjectionResultData != null) {
-            initMediaProjectionCapture(mediaProjectionResultCode, mediaProjectionResultData!!)
-        }
-    }
-
-    /**
-     * Initializes lightweight memory-only frame capture:
-     * - Downscales capture resolution to 50% scale (e.g., 540x1200 instead of 1080x2400)
-     * - Reduces memory bandwidth by >75% with zero disk writes, encoding, or recording
-     * - Uses background HandlerThread for fast off-main-thread ImageReader buffer reads
-     */
-    private fun initMediaProjectionCapture(resultCode: Int, resultData: Intent) {
-        try {
-            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
-
-            if (mediaProjection == null) {
-                Log.w(TAG, "MediaProjection permission returned null")
-                return
-            }
-
-            val metrics = DisplayMetrics()
-            windowManager.defaultDisplay.getRealMetrics(metrics)
-
-            // 50% Scale Downscaling (540p equivalent)
-            val captureWidth = (metrics.widthPixels * 0.5f).toInt().coerceAtLeast(360)
-            val captureHeight = (metrics.heightPixels * 0.5f).toInt().coerceAtLeast(640)
-            val densityDpi = (metrics.densityDpi * 0.5f).toInt().coerceAtLeast(120)
-
-            imageProcessingThread = HandlerThread("CarromVisionThread").apply { start() }
-            imageProcessingHandler = Handler(imageProcessingThread!!.looper)
-
-            imageReader = ImageReader.newInstance(
-                captureWidth,
-                captureHeight,
-                PixelFormat.RGBA_8888,
-                2
-            )
-
-            virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "CarromAimVisionDisplay",
-                captureWidth,
-                captureHeight,
-                densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader!!.surface,
-                null,
-                imageProcessingHandler
-            )
-
-            imageReader?.setOnImageAvailableListener({ reader ->
-                processImageReaderFrame(reader, captureWidth, captureHeight)
-            }, imageProcessingHandler)
-
-            Log.i(TAG, "Memory-only 50% scale ImageReader initialized ($captureWidth x $captureHeight @ 20 FPS max)")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize MediaProjection: ${e.message}", e)
-        }
-    }
-
-    /**
-     * Processes frames with strict throttling (~40ms / 25 FPS) and immediate closing:
-     * - Discards excess frames instantly to maintain 0% CPU overhead when idle.
-     * - Direct int[] pixel buffer extraction strictly mapped to 1:1 Carrom Board square.
-     * - Dispatches deterministic striker, target puck, and isPlayerTurn status to AimOverlayView.
-     * - Always calls image.close() inside a try-finally block to prevent memory leaks or GC stalls.
-     */
-    private fun processImageReaderFrame(reader: ImageReader, targetW: Int, targetH: Int) {
-        val now = SystemClock.elapsedRealtime()
-
-        // Throttle check: Skip frame if within 40ms interval or already processing
-        if (now - lastFrameProcessedTimestamp < MIN_FRAME_INTERVAL_MS || isProcessingFrame || isPaused) {
-            // Drain and close immediately
-            try {
-                reader.acquireLatestImage()?.close()
-            } catch (_: Exception) {}
-            return
-        }
-
-        var image: Image? = null
-        try {
-            image = reader.acquireLatestImage() ?: return
-            lastFrameProcessedTimestamp = now
-            isProcessingFrame = true
-
-            val planes = image.planes
-            if (planes.isEmpty()) return
-
-            val buffer = planes[0].buffer
-            val pixelStride = planes[0].pixelStride
-            val rowStride = planes[0].rowStride
-            val rowPadding = rowStride - pixelStride * targetW
-
-            val bitmapWidth = targetW + rowPadding / pixelStride
-            if (reuseBitmap == null || reuseBitmap?.width != bitmapWidth || reuseBitmap?.height != targetH) {
-                reuseBitmap?.recycle()
-                reuseBitmap = Bitmap.createBitmap(bitmapWidth, targetH, Bitmap.Config.ARGB_8888)
-            }
-
-            reuseBitmap?.copyPixelsFromBuffer(buffer)
-            val currentFrameBmp = reuseBitmap
-
-            if (currentFrameBmp != null) {
-                val metrics = DisplayMetrics()
-                windowManager.defaultDisplay.getRealMetrics(metrics)
-                val fullBoardBounds = AimEngine.calculateBoardBounds(metrics.widthPixels.toFloat(), metrics.heightPixels.toFloat())
-
-                // Crop & extract raw pixel buffer strictly mapped to the 1:1 board square
-                val scaleFactor = targetW.toFloat() / metrics.widthPixels.toFloat()
-                val scaledBoardSize = (fullBoardBounds.boardSize * scaleFactor).toInt()
-                val scaledBoardLeft = (fullBoardBounds.boardLeft * scaleFactor).toInt().coerceAtLeast(0)
-                val scaledBoardTop = (fullBoardBounds.boardTop * scaleFactor).toInt().coerceAtLeast(0)
-
-                val validBoardSide = min(scaledBoardSize, min(targetW - scaledBoardLeft, targetH - scaledBoardTop))
-
-                if (validBoardSide > 100) {
-                    val pixelCount = validBoardSide * validBoardSide
-                    if (reuseBoardPixels == null || reuseBoardPixels?.size != pixelCount) {
-                        reuseBoardPixels = IntArray(pixelCount)
-                    }
-                    val boardPixels = reuseBoardPixels!!
-
-                    currentFrameBmp.getPixels(
-                        boardPixels,
-                        0,
-                        validBoardSide,
-                        scaledBoardLeft,
-                        scaledBoardTop,
-                        validBoardSide,
-                        validBoardSide
-                    )
-
-                    // Execute deterministic 2D pixel scan on background thread
-                    val detection = AimEngine.scanBoardPixelsDirect(boardPixels, validBoardSide, fullBoardBounds)
-
-                    // Dispatch to Overlay View on Main Thread smoothly
-                    Handler(Looper.getMainLooper()).post {
-                        if (aimOverlayView != null) {
-                            aimOverlayView?.updateVisionDetection(
-                                isTurn = detection.isPlayerTurn,
-                                striker = detection.strikerPosition,
-                                puck = detection.targetPuckPosition,
-                                pocket = detection.targetPocket,
-                                pocketName = detection.targetPocketName
-                            )
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Frame processing exception: ${e.message}")
-        } finally {
-            // Immediate closing prevents buffer exhaustion and GC pauses
-            try {
-                image?.close()
-            } catch (_: Exception) {}
-            isProcessingFrame = false
-        }
     }
 
     private fun startForegroundNotification() {
@@ -625,24 +424,9 @@ class FloatingAimService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isServiceRunning.value = false
+        AimEngine.SheenTrackerEngine.stopTracker()
         CloudPhysicsSyncClient.stopTurnSyncWindow()
         NetworkClient.shutdown()
-
-        // Clean up MediaProjection & ImageReader memory resources
-        try {
-            virtualDisplay?.release()
-            virtualDisplay = null
-            imageReader?.close()
-            imageReader = null
-            mediaProjection?.stop()
-            mediaProjection = null
-            imageProcessingThread?.quitSafely()
-            imageProcessingThread = null
-            reuseBitmap?.recycle()
-            reuseBitmap = null
-        } catch (e: Exception) {
-            Log.w(TAG, "Cleanup exception: ${e.message}")
-        }
 
         aimOverlayView?.let {
             try {

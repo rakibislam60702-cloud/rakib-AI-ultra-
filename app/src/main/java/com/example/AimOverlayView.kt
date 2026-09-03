@@ -93,35 +93,53 @@ class AimOverlayView @JvmOverloads constructor(
     // Touch dragging: 0 = none, 1 = striker, 2 = puck, 3 = general aim
     private var activeTouchMode = 0
 
-    // Ultra-thin glowing laser paints
+    // Multi-Ray Trajectory & Resting Point Visualizer Paints:
+    // Line 1: Striker Vector (Crisp White glowing solid ray)
     private val strikerLaserCorePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#00E5FF") // Crisp Neon Cyan
-        strokeWidth = 2.4f
+        color = Color.WHITE // Crisp White
+        strokeWidth = 2.8f
     }
 
     private val strikerLaserGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#4400E5FF") // Translucent Cyan Glow
-        strokeWidth = 6.5f
+        color = Color.parseColor("#55FFFFFF") // Translucent Crisp White Glow
+        strokeWidth = 7.5f
     }
 
+    // Line 2: Target Puck Trajectory (Vivid Neon Yellow ray)
     private val puckLaserCorePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#00E676") // Crisp Neon Yellow/Green
-        strokeWidth = 2.4f
+        color = Color.parseColor("#FFEA00") // Vivid Neon Yellow
+        strokeWidth = 2.8f
     }
 
     private val puckLaserGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#4400E676") // Translucent Neon Green Glow
-        strokeWidth = 6.5f
+        color = Color.parseColor("#55FFEA00") // Translucent Neon Yellow Glow
+        strokeWidth = 7.5f
     }
 
+    // Line 3: Secondary / Kiss Shot (Cyan ray toward pocket)
+    private val kissLaserCorePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        color = Color.parseColor("#00E5FF") // Vivid Cyan
+        strokeWidth = 2.8f
+    }
+
+    private val kissLaserGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        color = Color.parseColor("#5500E5FF") // Translucent Cyan Glow
+        strokeWidth = 7.5f
+    }
+
+    // Impact Ghost-Point (G) with white impact ring & core dot
     private val ghostImpactCirclePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = Color.WHITE
@@ -130,14 +148,52 @@ class AimOverlayView @JvmOverloads constructor(
 
     private val ghostImpactGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = Color.parseColor("#44FFFFFF")
-        strokeWidth = 5.0f
+        color = Color.parseColor("#55FFFFFF")
+        strokeWidth = 5.5f
     }
 
     private val ghostImpactDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.WHITE
     }
+
+    // Stop/Resting Point Markers (Distinct colored dots where kinetic energy drops to 0):
+    // Striker Stop Marker: Crisp White
+    private val strikerRestDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+    }
+    private val strikerRestHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#66FFFFFF")
+        strokeWidth = 2.5f
+    }
+
+    // Target Puck Stop Marker: Vivid Neon Yellow
+    private val puckRestDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.parseColor("#FFEA00")
+    }
+    private val puckRestHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#66FFEA00")
+        strokeWidth = 2.5f
+    }
+
+    // Secondary / Kiss Puck Stop Marker: Vivid Cyan
+    private val kissRestDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.parseColor("#00E5FF")
+    }
+    private val kissRestHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#6600E5FF")
+        strokeWidth = 2.5f
+    }
+
+    // Active vision detected pucks & secondary puck representation
+    var secondaryCoinPos: PointF? = null
+    private var detectedPucksList: List<PointF> = emptyList()
 
     init {
         updatePaints()
@@ -149,9 +205,12 @@ class AimOverlayView @JvmOverloads constructor(
         strikerLaserGlowPaint.strokeWidth = width * 2.8f
         puckLaserCorePaint.strokeWidth = width
         puckLaserGlowPaint.strokeWidth = width * 2.8f
+        kissLaserCorePaint.strokeWidth = width
+        kissLaserGlowPaint.strokeWidth = width * 2.8f
 
-        strikerLaserCorePaint.color = config.laserColor
-        puckLaserCorePaint.color = config.puckColor
+        strikerLaserCorePaint.color = Color.WHITE
+        puckLaserCorePaint.color = Color.parseColor("#FFEA00")
+        kissLaserCorePaint.color = Color.parseColor("#00E5FF")
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -162,18 +221,27 @@ class AimOverlayView @JvmOverloads constructor(
             strikerPos.y = boardBounds.baselineY
             coinPos.x = boardBounds.boardCenter.x
             coinPos.y = boardBounds.boardCenter.y - (boardBounds.boardSize * 0.15f)
+            secondaryCoinPos = PointF(
+                boardBounds.boardCenter.x - (boardBounds.boardSize * 0.12f),
+                boardBounds.boardCenter.y - (boardBounds.boardSize * 0.26f)
+            )
             recalculateTrajectory()
         }
     }
 
     private fun recalculateTrajectory() {
+        val otherPucks = mutableListOf<PointF>()
+        secondaryCoinPos?.let { otherPucks.add(it) }
+        otherPucks.addAll(detectedPucksList.filter { hypot(it.x - coinPos.x, it.y - coinPos.y) > 25f })
+
         currentTrajectory = AimEngine.calculateGhostBallTrajectory(
             striker = strikerPos,
             puck = coinPos,
             bounds = boardBounds,
             config = config,
             overridePocket = overridePocketPos,
-            overridePocketName = overridePocketName
+            overridePocketName = overridePocketName,
+            otherPucks = otherPucks
         )
     }
 
@@ -187,7 +255,8 @@ class AimOverlayView @JvmOverloads constructor(
         striker: PointF?,
         puck: PointF?,
         pocket: PointF? = null,
-        pocketName: String? = null
+        pocketName: String? = null,
+        allPucks: List<PointF> = emptyList()
     ) {
         isPlayerTurn = isTurn
         if (!isTurn || striker == null || puck == null) {
@@ -199,6 +268,8 @@ class AimOverlayView @JvmOverloads constructor(
             invalidate()
             return
         }
+
+        detectedPucksList = allPucks
 
         // Live player turn detected!
         val newStrikerX = striker.x.coerceIn(boardBounds.cushionLeft, boardBounds.cushionRight)
@@ -361,12 +432,11 @@ class AimOverlayView @JvmOverloads constructor(
     }
 
     /**
-     * Clean Dynamic Rendering:
-     * - When idle (no touch or turn active), draw NOTHING on screen.
-     * - When an aim interaction occurs, draw two ultra-thin glowing laser lines:
-     *     Line 1 (Striker Line): From S to G (Cyan Laser with small white impact circle at G).
-     *     Line 2 (Puck Line): From P directly into pocket K (Yellow/Green Laser).
-     * - Stop drawing immediately at the pocket center; do not allow lines to spill over screen edges.
+     * Multi-Color Trajectory & Resting Point Visualization:
+     * - Striker Vector (Line 1): Crisp White glowing solid ray connecting Striker (Xs, Ys) to impact Ghost-Point (G).
+     * - Target Puck Trajectory (Line 2): Vivid Neon Yellow ray directing from active puck into target corner pocket.
+     * - Secondary / Kiss Shot (Line 3): If another puck obstructs line, render Cyan ray toward pocket.
+     * - Stop/Resting Point Markers: Render distinct colored dots at the precise points where striker and pucks lose kinetic energy.
      */
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -382,22 +452,58 @@ class AimOverlayView @JvmOverloads constructor(
         val p = traj.coinPos
         val k = traj.targetPocket
 
-        // 2. Line 1 (Striker Line): From S to G (Cyan Laser with small white impact circle at G)
-        // Draw outer glow line
+        // 2. Line 1 (Striker Vector): Crisp White glowing solid ray connecting Striker (Xs, Ys) to Ghost-Point (G)
         canvas.drawLine(s.x, s.y, g.x, g.y, strikerLaserGlowPaint)
-        // Draw crisp laser core
         canvas.drawLine(s.x, s.y, g.x, g.y, strikerLaserCorePaint)
 
-        // Small white impact circle at G
+        // Small white impact circle at Ghost-Ball impact point G
         val impactRadius = (config.coinRadius * 0.7f).coerceIn(12f, 18f)
         canvas.drawCircle(g.x, g.y, impactRadius, ghostImpactGlowPaint)
         canvas.drawCircle(g.x, g.y, impactRadius, ghostImpactCirclePaint)
         canvas.drawCircle(g.x, g.y, 2.5f, ghostImpactDotPaint)
 
-        // 3. Line 2 (Puck Line): From P directly into pocket K (Yellow/Green Laser)
-        // Stop drawing immediately at the pocket center K (do not spill over screen edges)
-        canvas.drawLine(p.x, p.y, k.x, k.y, puckLaserGlowPaint)
-        canvas.drawLine(p.x, p.y, k.x, k.y, puckLaserCorePaint)
+        // Subtle Striker Deceleration / Tangent Ray rollout towards resting point
+        traj.strikerRestPoint?.let { restPt ->
+            if (hypot(restPt.x - g.x, restPt.y - g.y) > 8f) {
+                canvas.drawLine(g.x, g.y, restPt.x, restPt.y, strikerLaserGlowPaint)
+                canvas.drawLine(g.x, g.y, restPt.x, restPt.y, strikerLaserCorePaint)
+            }
+        }
+
+        // 3. Line 2 (Target Puck Trajectory): Vivid Neon Yellow ray directing from active puck into target corner pocket
+        val pLine = traj.coinToPocketLine
+        if (pLine.size >= 2) {
+            canvas.drawLine(pLine[0].x, pLine[0].y, pLine[1].x, pLine[1].y, puckLaserGlowPaint)
+            canvas.drawLine(pLine[0].x, pLine[0].y, pLine[1].x, pLine[1].y, puckLaserCorePaint)
+        }
+
+        // 4. Line 3 (Secondary / Kiss Shot): Cyan ray directing secondary puck toward pocket
+        if (traj.isKissShotActive && traj.kissShotLines.size >= 2) {
+            val kLine = traj.kissShotLines
+            canvas.drawLine(kLine[0].x, kLine[0].y, kLine[1].x, kLine[1].y, kissLaserGlowPaint)
+            canvas.drawLine(kLine[0].x, kLine[0].y, kLine[1].x, kLine[1].y, kissLaserCorePaint)
+        }
+
+        // 5. Stop/Resting Point Markers: Distinct colored dots at the precise points where kinetic energy drops to 0
+        // a) Striker Stop Marker: Crisp White dot
+        traj.strikerRestPoint?.let { restPt ->
+            canvas.drawCircle(restPt.x, restPt.y, 9.5f, strikerRestHaloPaint)
+            canvas.drawCircle(restPt.x, restPt.y, 4.5f, strikerRestDotPaint)
+        }
+
+        // b) Target Puck Stop Marker: Vivid Neon Yellow dot
+        traj.targetPuckRestPoint?.let { restPt ->
+            canvas.drawCircle(restPt.x, restPt.y, 10.5f, puckRestHaloPaint)
+            canvas.drawCircle(restPt.x, restPt.y, 5.0f, puckRestDotPaint)
+        }
+
+        // c) Secondary / Kiss Puck Stop Marker: Vivid Cyan dot
+        if (traj.isKissShotActive) {
+            traj.secondaryPuckRestPoint?.let { restPt ->
+                canvas.drawCircle(restPt.x, restPt.y, 10.5f, kissRestHaloPaint)
+                canvas.drawCircle(restPt.x, restPt.y, 5.0f, kissRestDotPaint)
+            }
+        }
     }
 
     /**

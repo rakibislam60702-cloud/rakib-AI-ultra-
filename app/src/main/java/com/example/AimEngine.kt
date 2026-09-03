@@ -3,7 +3,9 @@ package com.example
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PointF
+import android.os.SystemClock
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.math.*
 
 /**
@@ -105,14 +107,16 @@ data class CarromBoardBounds(
 /**
  * Board Vision Puck representation.
  */
-enum class PuckType { WHITE, BLACK, QUEEN, STRIKER }
+enum class PuckType { WHITE, BLACK, QUEEN, STRIKER, ACTIVE_SHEEN }
 
 data class VisionPuck(
     val id: String,
     val position: PointF,
     val type: String,
     val radius: Float = 24f,
-    val confidence: Float = 0.98f
+    val confidence: Float = 0.98f,
+    val hasSheenGlint: Boolean = false,
+    val sheenLuminance: Float = 0f
 )
 
 /**
@@ -195,11 +199,16 @@ data class AimTrajectory(
     val targetPocket: PointF,
     val pocketName: String,
     val ghostStrikerPos: PointF,              // Ghost-Ball Impact Point (G)
-    val directStrikeLine: List<PointF>,       // Line 1: S -> G (Striker Line)
-    val coinToPocketLine: List<PointF>,       // Line 2: P -> K (Puck Line)
+    val directStrikeLine: List<PointF>,       // Line 1: S -> G (Striker Line - Crisp White)
+    val coinToPocketLine: List<PointF>,       // Line 2: P -> K (Puck Line - Neon Yellow)
     val bankShotLines: List<PointF> = emptyList(),
     val strikerReboundLine: List<PointF> = emptyList(),
-    val kissShotLines: List<PointF> = emptyList(),
+    val kissShotLines: List<PointF> = emptyList(), // Line 3: Secondary / Kiss Shot (Cyan Ray)
+    val strikerRestPoint: PointF? = null,     // Kinetic energy loss stop marker for striker (White dot)
+    val targetPuckRestPoint: PointF? = null,  // Kinetic energy loss stop marker for target puck (Neon Yellow dot)
+    val secondaryPuckRestPoint: PointF? = null, // Kinetic energy loss stop marker for secondary puck (Cyan dot)
+    val isKissShotActive: Boolean = false,
+    val secondaryPuckPos: PointF? = null,
     val tangentLine: List<PointF>? = null,
     val backSliceRays: List<PointF>? = null,
     val cushionImpactPoints: List<PointF> = emptyList(),
@@ -372,7 +381,8 @@ object AimEngine {
         bounds: CarromBoardBounds,
         config: AimEngineConfig = AimEngineConfig(),
         overridePocket: PointF? = null,
-        overridePocketName: String? = null
+        overridePocketName: String? = null,
+        otherPucks: List<PointF> = emptyList()
     ): AimTrajectory {
         // a) Identify target pocket (K)
         var nearestPocketName = overridePocketName ?: "Top-Left"
@@ -421,16 +431,10 @@ object AimEngine {
         val ghostY = py - (vPocketY * puckDiameter)
         val ghostPoint = PointF(ghostX, ghostY)
 
-        // d) Striker aim vector is directed strictly from S to G
+        // d) Multi-Ray Line 1: Striker Vector connecting Striker (Xs, Ys) to impact Ghost-Point (G)
         val directStrikeLine = listOf(
             PointF(striker.x, striker.y),
             ghostPoint
-        )
-
-        // e) Post-impact puck trajectory strictly from P into K (stops immediately at K)
-        val coinToPocketLine = listOf(
-            PointF(puck.x, puck.y),
-            PointF(nearestPocket.x, nearestPocket.y)
         )
 
         val dSx = ghostX - striker.x
@@ -450,15 +454,135 @@ object AimEngine {
             cushions = 0
         )
 
+        // ---------------------------------------------------------------------
+        // MULTI-RAY LINE 2, LINE 3 & RESTING POINT KINETIC ENERGY CALCULATIONS
+        // ---------------------------------------------------------------------
+        var isKissActive = false
+        var secondaryPuck: PointF? = null
+        var secondaryKissLine: List<PointF> = emptyList()
+        var targetPuckLine = listOf(
+            PointF(puck.x, puck.y),
+            PointF(nearestPocket.x, nearestPocket.y)
+        )
+
+        var strikerRestPos: PointF? = null
+        var puckRestPos: PointF? = null
+        var secondaryPuckRestPos: PointF? = null
+
+        // Check if another puck obstructs the line between active puck and pocket K
+        val linePKVec = Vector2(nearestPocket.x - puck.x, nearestPocket.y - puck.y)
+        val linePKLen = linePKVec.length()
+        val linePKNorm = if (linePKLen > 0.001f) linePKVec.normalized() else Vector2(0f, 0f)
+
+        var nearestObstacle: PointF? = null
+        var minObstacleProj = Float.MAX_VALUE
+
+        for (other in otherPucks) {
+            val dToPuck = hypot(other.x - puck.x, other.y - puck.y)
+            if (dToPuck < puckRadius * 0.8f) continue // Ignore self
+
+            val toOther = Vector2(other.x - puck.x, other.y - puck.y)
+            val projection = toOther.dot(linePKNorm)
+
+            if (projection in (puckDiameter * 0.8f)..(linePKLen - puckDiameter * 0.5f)) {
+                val perpDist = abs(toOther.x * linePKNorm.y - toOther.y * linePKNorm.x)
+                if (perpDist < puckDiameter * 1.15f && projection < minObstacleProj) {
+                    minObstacleProj = projection
+                    nearestObstacle = other
+                }
+            }
+        }
+
+        if (nearestObstacle != null) {
+            // Secondary / Kiss Shot:
+            // Calculate post-collision angle and render a Cyan ray toward the pocket
+            isKissActive = true
+            secondaryPuck = nearestObstacle
+
+            val dOKx = nearestPocket.x - nearestObstacle.x
+            val dOKy = nearestPocket.y - nearestObstacle.y
+            val distOK = hypot(dOKx, dOKy)
+            val vOK = if (distOK > 0.001f) Vector2(dOKx / distOK, dOKy / distOK) else Vector2(0f, -1f)
+
+            // Secondary ghost contact point
+            val secondaryGhostX = nearestObstacle.x - (vOK.x * puckDiameter)
+            val secondaryGhostY = nearestObstacle.y - (vOK.y * puckDiameter)
+            val secondaryGhost = PointF(secondaryGhostX, secondaryGhostY)
+
+            // Primary puck travels from P to secondary ghost
+            targetPuckLine = listOf(
+                PointF(puck.x, puck.y),
+                secondaryGhost
+            )
+
+            // Line 3: Cyan ray directing secondary puck into pocket
+            secondaryKissLine = listOf(
+                PointF(nearestObstacle.x, nearestObstacle.y),
+                PointF(nearestPocket.x, nearestPocket.y)
+            )
+
+            // Resting points for kiss shot:
+            secondaryPuckRestPos = PointF(nearestPocket.x, nearestPocket.y)
+
+            // Primary puck deflects after hitting secondary puck
+            val vPO = Vector2(secondaryGhost.x - puck.x, secondaryGhost.y - puck.y).normalized()
+            val normalKiss = vOK
+            val tangentKiss = Vector2(
+                vPO.x - (vPO.dot(normalKiss) * normalKiss.x),
+                vPO.y - (vPO.dot(normalKiss) * normalKiss.y)
+            )
+            val tanKissLen = tangentKiss.length()
+            val normTanKiss = if (tanKissLen > 0.001f) Vector2(tangentKiss.x / tanKissLen, tangentKiss.y / tanKissLen) else Vector2(-vPO.y, vPO.x)
+            val deflectedDist = ((powerPercent / 100f) * 65f + 16f).coerceIn(15f, 120f)
+            puckRestPos = PointF(
+                (secondaryGhost.x + normTanKiss.x * deflectedDist).coerceIn(bounds.cushionLeft, bounds.cushionRight),
+                (secondaryGhost.y + normTanKiss.y * deflectedDist).coerceIn(bounds.cushionTop, bounds.cushionBottom)
+            )
+        } else {
+            // Direct pot: Target puck lands in pocket K and stops
+            puckRestPos = PointF(nearestPocket.x, nearestPocket.y)
+        }
+
+        // Striker Resting Point (Kinetic Energy Loss calculation):
+        val vStrikerNorm = if (distStrikerToGhost > 0.001f) Vector2(dSx / distStrikerToGhost, dSy / distStrikerToGhost) else Vector2(0f, 0f)
+        val vImpactNormal = Vector2(vPocketX, vPocketY)
+        val strikerTangent = Vector2(
+            vStrikerNorm.x - (vStrikerNorm.dot(vImpactNormal) * vImpactNormal.x),
+            vStrikerNorm.y - (vStrikerNorm.dot(vImpactNormal) * vImpactNormal.y)
+        )
+        val tangentLen = strikerTangent.length()
+
+        val strikerReboundRay = mutableListOf<PointF>()
+        if (tangentLen > 0.01f) {
+            val normTangent = Vector2(strikerTangent.x / tangentLen, strikerTangent.y / tangentLen)
+            val strikerRollDistance = ((powerPercent / 100f) * tangentLen * 180f + 18f).coerceIn(15f, 220f)
+            val sx = (ghostPoint.x + normTangent.x * strikerRollDistance).coerceIn(bounds.cushionLeft, bounds.cushionRight)
+            val sy = (ghostPoint.y + normTangent.y * strikerRollDistance).coerceIn(bounds.cushionTop, bounds.cushionBottom)
+            strikerRestPos = PointF(sx, sy)
+            strikerReboundRay.add(ghostPoint)
+            strikerReboundRay.add(strikerRestPos)
+        } else {
+            // Pure head-on collision: complete kinetic transfer, striker stops at G
+            strikerRestPos = PointF(ghostPoint.x, ghostPoint.y)
+        }
+
         return AimTrajectory(
-            shotType = LineRenderMode.DIRECT,
+            shotType = if (isKissActive) LineRenderMode.KISS_SHOT else LineRenderMode.DIRECT,
             strikerPos = striker,
             coinPos = puck,
+            secondaryCoinPos = secondaryPuck,
             targetPocket = nearestPocket,
             pocketName = nearestPocketName,
             ghostStrikerPos = ghostPoint,
             directStrikeLine = directStrikeLine,
-            coinToPocketLine = coinToPocketLine,
+            coinToPocketLine = targetPuckLine,
+            kissShotLines = secondaryKissLine,
+            strikerReboundLine = strikerReboundRay,
+            strikerRestPoint = strikerRestPos,
+            targetPuckRestPoint = puckRestPos,
+            secondaryPuckRestPoint = secondaryPuckRestPos,
+            isKissShotActive = isKissActive,
+            secondaryPuckPos = secondaryPuck,
             boardBounds = bounds,
             angleDegrees = shotAngleDeg,
             cutAngleDegrees = cutAngleDeg,
@@ -467,8 +591,8 @@ object AimEngine {
             powerLabel = powerLabel,
             dynamicPullbackDistancePx = pullbackPx,
             totalShotDistancePx = totalDistance,
-            shotTitle = "Ghost-Ball Direct Pot",
-            strategyNotes = "Nearest pocket $nearestPocketName locked"
+            shotTitle = if (isKissActive) "Kiss / Carom Combo" else "Ghost-Ball Direct Pot",
+            strategyNotes = if (isKissActive) "Obstacle resolved -> Cyan Kiss Ray to $nearestPocketName" else "Nearest pocket $nearestPocketName locked"
         )
     }
 
@@ -721,6 +845,37 @@ object AimEngine {
             }
         }
 
+        // ---------------------------------------------------------------------
+        // 2B. ACTIVE PUCK SHEEN / GLINT SCANNER (UNIVERSAL SKIN SUPPORT)
+        // High-luminance pulse peaks (Value V >= 0.92, Saturation S <= 0.12)
+        // occurring within circular puck radii (~28dp) inside board's inner active circle.
+        // Any puck displaying this luminance reflection is instantly classified as an Active Target Puck.
+        // ---------------------------------------------------------------------
+        val sheenPucks = scanInnerCircleSheenPeaksDirect(boardPixels, boardSide, boardBounds)
+        for (sp in sheenPucks) {
+            val sGridX = (sp.position.x - boardBounds.boardLeft) / scaleToScreen
+            val sGridY = (sp.position.y - boardBounds.boardTop) / scaleToScreen
+            val existing = puckCandidates.firstOrNull {
+                hypot(it.gridX - sGridX, it.gridY - sGridY) < puckRadiusPx * 1.3f
+            }
+            if (existing != null) {
+                existing.hasSheenGlint = true
+                existing.sheenLuminance = sp.sheenLuminance
+                existing.weight = 0.99f
+            } else {
+                puckCandidates.add(
+                    PuckCandidate(
+                        gridX = sGridX,
+                        gridY = sGridY,
+                        type = PuckType.ACTIVE_SHEEN,
+                        weight = 0.99f,
+                        hasSheenGlint = true,
+                        sheenLuminance = sp.sheenLuminance
+                    )
+                )
+            }
+        }
+
         // Convert puck candidates to VisionPuck list
         val detectedVisionPucks = puckCandidates.mapIndexed { index, cand ->
             VisionPuck(
@@ -731,13 +886,15 @@ object AimEngine {
                 ),
                 type = cand.type.name,
                 radius = puckRadiusPx * scaleToScreen,
-                confidence = cand.weight
+                confidence = cand.weight,
+                hasSheenGlint = cand.hasSheenGlint,
+                sheenLuminance = cand.sheenLuminance
             )
         }
 
         // ---------------------------------------------------------------------
         // 3. AUTO-SELECT OPTIMAL TARGET PUCK
-        // Choose puck with clearest unobstructed straight path to any 4 pockets
+        // Prioritizes Active Puck Sheen/Glint targets (+1000f score bonus)
         // ---------------------------------------------------------------------
         var optimalTargetPuck: PointF? = null
         var selectedPocket: PointF? = null
@@ -769,9 +926,10 @@ object AimEngine {
                 val vPK = Vector2(pPos.x - puckScreenPos.x, pPos.y - puckScreenPos.y).normalized()
                 val alignment = vSP.dot(vPK).coerceIn(-1f, 1f) // 1.0 = direct straight shot, < 0 = back cut
 
-                // High score for clear path, straight alignment, closer distance, Queen bonus
+                // High score for sheen active pucks (+1000f), clear path, straight alignment, closer distance
+                val sheenBonus = if (cand.hasSheenGlint || cand.type == PuckType.ACTIVE_SHEEN) 1000f else 0f
                 val queenBonus = if (cand.type == PuckType.QUEEN) 200f else 0f
-                val shotScore = (pathClearance * 500f) + (alignment * 300f) - (dToPocket * 0.4f) - (dToStriker * 0.2f) + queenBonus
+                val shotScore = sheenBonus + (pathClearance * 500f) + (alignment * 300f) - (dToPocket * 0.4f) - (dToStriker * 0.2f) + queenBonus
 
                 if (shotScore > bestShotScore) {
                     bestShotScore = shotScore
@@ -791,6 +949,187 @@ object AimEngine {
             targetPocketName = selectedPocketName,
             isVisionCalibrated = true
         )
+    }
+
+    /**
+     * High-Luminance Active Puck Sheen/Glint Tracker (Universal Skin Support):
+     * - Carrom Pool overlays an animated diagonal white shine/glint across the active player's valid pucks.
+     * - Scans exclusively for high-luminance pulse peaks (Value V >= 0.92, Saturation S <= 0.12)
+     *   occurring within circular puck radii (~28dp) inside the board's inner active circle.
+     * - Any puck displaying this luminance reflection is instantly classified as an Active Target Puck,
+     *   ignoring custom skin textures or base colors (Blue, Black, Special Skins).
+     */
+    fun scanInnerCircleSheenPeaksDirect(
+        boardPixels: IntArray,
+        boardSide: Int,
+        boardBounds: CarromBoardBounds
+    ): List<VisionPuck> {
+        if (boardSide < 100 || boardPixels.size < boardSide * boardSide) {
+            return emptyList()
+        }
+
+        val centerX = boardSide / 2f
+        val centerY = boardSide / 2f
+        // Strictly across the board's inner active circle (radius = 40% of board side)
+        val innerCircleRadius = boardSide * 0.40f
+        val innerCircleRadiusSq = innerCircleRadius * innerCircleRadius
+
+        val puckRadiusPx = boardSide * 0.028f // ~28dp circular puck radius
+        val clusterMergeDistSq = (puckRadiusPx * 1.3f) * (puckRadiusPx * 1.3f)
+
+        val hsv = FloatArray(3)
+        val step = max(2, boardSide / 160) // Fast 2-3px sampling step
+
+        val peakCandidates = mutableListOf<SheenPeakCandidate>()
+
+        val minY = (centerY - innerCircleRadius).toInt().coerceIn(0, boardSide - 1)
+        val maxY = (centerY + innerCircleRadius).toInt().coerceIn(0, boardSide - 1)
+
+        for (y in minY..maxY step step) {
+            val dy = y - centerY
+            val dySq = dy * dy
+            val remainingRadiusSq = innerCircleRadiusSq - dySq
+            if (remainingRadiusSq <= 0) continue
+            val maxDx = sqrt(remainingRadiusSq.toDouble()).toFloat()
+            val minX = (centerX - maxDx).toInt().coerceIn(0, boardSide - 1)
+            val maxX = (centerX + maxDx).toInt().coerceIn(0, boardSide - 1)
+
+            for (x in minX..maxX step step) {
+                val pixel = boardPixels[y * boardSide + x]
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+
+                Color.RGBToHSV(r, g, b, hsv)
+                val sat = hsv[1]
+                val value = hsv[2]
+
+                // High-luminance pulse peaks: Value V >= 0.92, Saturation S <= 0.12
+                if (value >= 0.92f && sat <= 0.12f) {
+                    var merged = false
+                    for (cand in peakCandidates) {
+                        val cdx = x - cand.gridX
+                        val cdy = y - cand.gridY
+                        if (cdx * cdx + cdy * cdy <= clusterMergeDistSq) {
+                            cand.pixelCount++
+                            cand.sumX += x
+                            cand.sumY += y
+                            cand.gridX = cand.sumX / cand.pixelCount
+                            cand.gridY = cand.sumY / cand.pixelCount
+                            if (value > cand.peakValue) {
+                                cand.peakValue = value
+                                cand.minSat = min(cand.minSat, sat)
+                            }
+                            merged = true
+                            break
+                        }
+                    }
+
+                    if (!merged) {
+                        peakCandidates.add(
+                            SheenPeakCandidate(
+                                gridX = x.toFloat(),
+                                gridY = y.toFloat(),
+                                peakValue = value,
+                                minSat = sat,
+                                sumX = x.toFloat(),
+                                sumY = y.toFloat(),
+                                pixelCount = 1
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        val scaleToScreen = boardBounds.boardSize / boardSide.toFloat()
+        return peakCandidates.mapIndexed { index, cand ->
+            val screenX = boardBounds.boardLeft + (cand.gridX * scaleToScreen)
+            val screenY = boardBounds.boardTop + (cand.gridY * scaleToScreen)
+            VisionPuck(
+                id = "ACTIVE_SHEEN_$index",
+                position = PointF(screenX, screenY),
+                type = PuckType.ACTIVE_SHEEN.name,
+                radius = puckRadiusPx * scaleToScreen,
+                confidence = 0.99f,
+                hasSheenGlint = true,
+                sheenLuminance = cand.peakValue
+            )
+        }
+    }
+
+    /**
+     * Ultra-Low CPU Footprint Sheen Tracker Engine:
+     * Runs the sheen peak detector asynchronously at 12 FPS strictly across
+     * the board's inner active circle to guarantee 0% device lag and zero frame throttling.
+     */
+    object SheenTrackerEngine {
+        private val trackerScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        private var trackerJob: Job? = null
+
+        val activeSheenPucksFlow = MutableStateFlow<List<VisionPuck>>(emptyList())
+        var latestActivePucks: List<VisionPuck> = emptyList()
+            private set
+
+        private var latestFramePixels: IntArray? = null
+        private var latestBoardSide: Int = 0
+        private var latestBoardBounds: CarromBoardBounds? = null
+        private var isFrameDirty: Boolean = false
+        private val frameBufferLock = Any()
+
+        fun postFrameBuffer(pixels: IntArray, side: Int, bounds: CarromBoardBounds) {
+            synchronized(frameBufferLock) {
+                if (latestFramePixels == null || latestFramePixels?.size != pixels.size) {
+                    latestFramePixels = pixels.clone()
+                } else {
+                    System.arraycopy(pixels, 0, latestFramePixels!!, 0, pixels.size)
+                }
+                latestBoardSide = side
+                latestBoardBounds = bounds
+                isFrameDirty = true
+            }
+        }
+
+        fun startAsync12FpsTracker(onDetectionUpdate: ((List<VisionPuck>) -> Unit)? = null) {
+            stopTracker()
+            trackerJob = trackerScope.launch {
+                while (isActive) {
+                    val loopStart = SystemClock.elapsedRealtime()
+
+                    var buffer: IntArray? = null
+                    var side = 0
+                    var bounds: CarromBoardBounds? = null
+
+                    synchronized(frameBufferLock) {
+                        if (isFrameDirty && latestFramePixels != null && latestBoardSide > 0 && latestBoardBounds != null) {
+                            buffer = latestFramePixels
+                            side = latestBoardSide
+                            bounds = latestBoardBounds
+                            isFrameDirty = false
+                        }
+                    }
+
+                    if (buffer != null && bounds != null) {
+                        val detected = scanInnerCircleSheenPeaksDirect(buffer!!, side, bounds!!)
+                        latestActivePucks = detected
+                        activeSheenPucksFlow.value = detected
+                        withContext(Dispatchers.Main) {
+                            onDetectionUpdate?.invoke(detected)
+                        }
+                    }
+
+                    // Strict 12 FPS interval (1000ms / 12 = ~83.3ms) for 0% lag and zero throttling
+                    val elapsed = SystemClock.elapsedRealtime() - loopStart
+                    val sleepMs = (83L - elapsed).coerceAtLeast(10L)
+                    delay(sleepMs)
+                }
+            }
+        }
+
+        fun stopTracker() {
+            trackerJob?.cancel()
+            trackerJob = null
+        }
     }
 
     /**
@@ -937,7 +1276,19 @@ object AimEngine {
         var gridX: Float,
         var gridY: Float,
         val type: PuckType,
-        var weight: Float
+        var weight: Float,
+        var hasSheenGlint: Boolean = false,
+        var sheenLuminance: Float = 0f
+    )
+
+    private data class SheenPeakCandidate(
+        var gridX: Float,
+        var gridY: Float,
+        var peakValue: Float,
+        var minSat: Float,
+        var sumX: Float,
+        var sumY: Float,
+        var pixelCount: Int
     )
 }
 
