@@ -147,6 +147,27 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
         }
 
         /**
+         * Dispatches true inverted slingshot swipe gesture matching exact parameters:
+         * Angle = target_angle + 180 degrees, pull distance = 160px.
+         * Starts at Striker (x, y) -> drags backward to (pull_x, pull_y) over 100ms -> release (ACTION_UP).
+         */
+        fun performReverseSlingshotStrike(
+            strikerPos: PointF,
+            ghostPoint: PointF,
+            pullDistancePx: Float = 160f,
+            durationMs: Long = 100L,
+            onComplete: ((Boolean) -> Unit)? = null
+        ) {
+            val service = instance
+            if (service == null) {
+                Log.w(TAG, "AutoStrikeAccessibilityService is not connected or enabled.")
+                onComplete?.invoke(false)
+                return
+            }
+            service.executeReverseSlingshot(strikerPos, ghostPoint, pullDistancePx, durationMs, onComplete)
+        }
+
+        /**
          * Backward compatibility dispatch:
          */
         fun performAutoStrike(
@@ -326,6 +347,81 @@ open class AutoStrikeAccessibilityService : AccessibilityService() {
         if (!dispatched) {
             isAutoPlayExecuting.value = false
             Log.e(TAG, "Failed to dispatch slingshot auto-strike gesture.")
+            mainHandler.post {
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    /**
+     * Executes the one-tap inverted slingshot gesture:
+     * - Reverse slingshot vector: angle = target_angle + 180 degrees, pull distance = 160px.
+     * - Starts at Striker (x, y) -> drags backward to (pull_x, pull_y) over 100ms -> release (ACTION_UP).
+     * - Zero delay and zero CPU throttling.
+     */
+    fun executeReverseSlingshot(
+        strikerPos: PointF,
+        ghostPoint: PointF,
+        pullDistancePx: Float = 160f,
+        durationMs: Long = 100L,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            Log.e(TAG, "GestureDescription requires Android 7.0 (API 24)+")
+            onComplete?.invoke(false)
+            return
+        }
+
+        // Calculate target forward angle
+        val dx = ghostPoint.x - strikerPos.x
+        val dy = ghostPoint.y - strikerPos.y
+        val targetAngleRad = atan2(dy.toDouble(), dx.toDouble())
+
+        // Inverted slingshot: angle = target_angle + 180 degrees (PI radians)
+        val pullAngleRad = targetAngleRad + PI
+        val pullX = (strikerPos.x + pullDistancePx * cos(pullAngleRad)).toFloat()
+        val pullY = (strikerPos.y + pullDistancePx * sin(pullAngleRad)).toFloat()
+
+        val path = Path().apply {
+            moveTo(strikerPos.x, strikerPos.y)
+            lineTo(pullX, pullY)
+        }
+
+        val gestureDuration = durationMs.coerceAtLeast(60L)
+        val stroke = GestureDescription.StrokeDescription(path, 0L, gestureDuration)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+        isAutoPlayExecuting.value = true
+        lastExecutedShotInfo.value = "Reverse Slingshot: 160px pull in ${gestureDuration}ms"
+
+        val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                super.onCompleted(gestureDescription)
+                isAutoPlayExecuting.value = false
+                Log.d(TAG, "One-Tap Reverse Slingshot executed to ($pullX, $pullY) in ${gestureDuration}ms.")
+                mainHandler.post {
+                    Toast.makeText(
+                        this@AutoStrikeAccessibilityService,
+                        "⚡ Slingshot Strike Dispatched (160px, ${gestureDuration}ms)!",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    onComplete?.invoke(true)
+                }
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                super.onCancelled(gestureDescription)
+                isAutoPlayExecuting.value = false
+                Log.w(TAG, "Reverse Slingshot gesture cancelled.")
+                mainHandler.post {
+                    onComplete?.invoke(false)
+                }
+            }
+        }, null)
+
+        if (!dispatched) {
+            isAutoPlayExecuting.value = false
+            Log.e(TAG, "Failed to dispatch reverse slingshot gesture.")
             mainHandler.post {
                 onComplete?.invoke(false)
             }

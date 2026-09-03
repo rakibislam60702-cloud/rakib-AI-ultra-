@@ -109,19 +109,20 @@ class FloatingAimService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        // পুরো স্ক্রিন টাচ-ফ্রি এবং পাস-থ্রু করার ফ্ল্যাগ
+        // Professional overlay flags: FLAG_NOT_TOUCH_MODAL for smooth touch pass-through, hardware accelerated
         val overlayParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             layoutFlag,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT
         )
 
         aimOverlayView = AimOverlayView(this).apply {
-            visibility = View.GONE // গেমের শুরুতে বন্ধ থাকবে
+            visibility = View.VISIBLE
         }
         windowManager.addView(aimOverlayView, overlayParams)
     }
@@ -288,42 +289,36 @@ class FloatingAimService : Service() {
         // Initialize state
         updateAutoPlayUI(AimEngine.isAutoPlayActive)
 
-        // 1. TOP BUTTON: Auto-Play Toggle Pill
+        // 1. TOP BUTTON: Auto-Play Pill (One-Tap Slingshot Auto-Strike)
         btnAutoPlay.setOnTouchListener(createDraggableTouchListener {
             resetIdleFade(compactDrawer.visibility == View.VISIBLE)
-            val nextState = !AimEngine.isAutoPlayActive
 
-            if (nextState) {
-                // Verify Accessibility permission before activating hands-free Auto-Strike
-                if (!AutoStrikeAccessibilityService.isAccessibilitySettingsOn(this@FloatingAimService)) {
-                    updateAutoPlayUI(false)
-                    Toast.makeText(
-                        this@FloatingAimService,
-                        "⚠️ Please enable 'AutoStrike Service' in Accessibility Settings",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    try {
-                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        startActivity(intent)
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                    return@createDraggableTouchListener
-                }
-
-                AimEngine.isAutoPlayActive = true
-                aimOverlayView?.isAutoPlayActive = true
-                aimOverlayView?.wakeRenderingEngine()
-                updateAutoPlayUI(true)
-                Toast.makeText(this@FloatingAimService, "⚡ Auto-Play Active: Hands-Free Slingshot ON", Toast.LENGTH_SHORT).show()
-            } else {
-                AimEngine.isAutoPlayActive = false
-                aimOverlayView?.isAutoPlayActive = false
+            // Verify Accessibility permission before activating hands-free Auto-Strike
+            if (!AutoStrikeAccessibilityService.isAccessibilitySettingsOn(this@FloatingAimService)) {
                 updateAutoPlayUI(false)
-                Toast.makeText(this@FloatingAimService, "✋ Manual Mode: Play with your fingers", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this@FloatingAimService,
+                    "⚠️ Please enable 'AutoStrike Service' in Accessibility Settings",
+                    Toast.LENGTH_LONG
+                ).show()
+                try {
+                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+                return@createDraggableTouchListener
             }
+
+            AimEngine.isAutoPlayActive = true
+            aimOverlayView?.isAutoPlayActive = true
+            aimOverlayView?.wakeRenderingEngine()
+            updateAutoPlayUI(true)
+            Toast.makeText(this@FloatingAimService, "⚡ Slingshot Auto-Strike Fired!", Toast.LENGTH_SHORT).show()
+            // Force Slingshot Auto-Strike dispatch
+            aimOverlayView?.triggerAutoStrike()
         })
 
         // 2. BOTTOM BUTTON: "Rakib Ultra" Pill (Expands/Collapses Compact Drawer)
@@ -424,7 +419,6 @@ class FloatingAimService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isServiceRunning.value = false
-        AimEngine.SheenTrackerEngine.stopTracker()
         CloudPhysicsSyncClient.stopTurnSyncWindow()
         NetworkClient.shutdown()
 

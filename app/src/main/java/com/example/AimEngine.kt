@@ -566,6 +566,62 @@ object AimEngine {
             strikerRestPos = PointF(ghostPoint.x, ghostPoint.y)
         }
 
+        // Cushion Rebound / Bank Shot Calculation:
+        // Calculate specular reflection point off nearest cushion
+        val bankShotRay = mutableListOf<PointF>()
+        val cushionBouncePoints = mutableListOf<PointF>()
+
+        // Test reflection off Top Cushion (y = bounds.cushionTop)
+        val mirrorTopY = 2f * bounds.cushionTop - nearestPocket.y
+        if (py > bounds.cushionTop + 15f && abs(mirrorTopY - py) > 0.001f) {
+            val tTop = (bounds.cushionTop - py) / (mirrorTopY - py)
+            if (tTop in 0.05f..0.95f) {
+                val bounceX = px + tTop * (nearestPocket.x - px)
+                if (bounceX in (bounds.cushionLeft + 15f)..(bounds.cushionRight - 15f)) {
+                    val bouncePoint = PointF(bounceX, bounds.cushionTop)
+                    bankShotRay.add(PointF(px, py))
+                    bankShotRay.add(bouncePoint)
+                    bankShotRay.add(PointF(nearestPocket.x, nearestPocket.y))
+                    cushionBouncePoints.add(bouncePoint)
+                }
+            }
+        }
+
+        // Check Left or Right Cushion if top cushion rebound is not applicable
+        if (bankShotRay.isEmpty()) {
+            val mirrorLeftX = 2f * bounds.cushionLeft - nearestPocket.x
+            if (px > bounds.cushionLeft + 15f && abs(mirrorLeftX - px) > 0.001f) {
+                val tLeft = (bounds.cushionLeft - px) / (mirrorLeftX - px)
+                if (tLeft in 0.05f..0.95f) {
+                    val bounceY = py + tLeft * (nearestPocket.y - py)
+                    if (bounceY in (bounds.cushionTop + 15f)..(bounds.cushionBottom - 15f)) {
+                        val bouncePoint = PointF(bounds.cushionLeft, bounceY)
+                        bankShotRay.add(PointF(px, py))
+                        bankShotRay.add(bouncePoint)
+                        bankShotRay.add(PointF(nearestPocket.x, nearestPocket.y))
+                        cushionBouncePoints.add(bouncePoint)
+                    }
+                }
+            }
+        }
+
+        if (bankShotRay.isEmpty()) {
+            val mirrorRightX = 2f * bounds.cushionRight - nearestPocket.x
+            if (px < bounds.cushionRight - 15f && mirrorRightX - px > 0.001f) {
+                val tRight = (bounds.cushionRight - px) / (mirrorRightX - px)
+                if (tRight in 0.05f..0.95f) {
+                    val bounceY = py + tRight * (nearestPocket.y - py)
+                    if (bounceY in (bounds.cushionTop + 15f)..(bounds.cushionBottom - 15f)) {
+                        val bouncePoint = PointF(bounds.cushionRight, bounceY)
+                        bankShotRay.add(PointF(px, py))
+                        bankShotRay.add(bouncePoint)
+                        bankShotRay.add(PointF(nearestPocket.x, nearestPocket.y))
+                        cushionBouncePoints.add(bouncePoint)
+                    }
+                }
+            }
+        }
+
         return AimTrajectory(
             shotType = if (isKissActive) LineRenderMode.KISS_SHOT else LineRenderMode.DIRECT,
             strikerPos = striker,
@@ -576,6 +632,8 @@ object AimEngine {
             ghostStrikerPos = ghostPoint,
             directStrikeLine = directStrikeLine,
             coinToPocketLine = targetPuckLine,
+            bankShotLines = bankShotRay,
+            cushionImpactPoints = cushionBouncePoints,
             kissShotLines = secondaryKissLine,
             strikerReboundLine = strikerReboundRay,
             strikerRestPoint = strikerRestPos,
@@ -704,593 +762,140 @@ object AimEngine {
         )
     }
 
-    // =========================================================================
-    // REAL-TIME FRAME PIXEL SCANNER (HSV-BASED, DETERMINISTIC)
-    // =========================================================================
-
     /**
-     * Scans direct raw int[] pixel buffer strictly mapped to the 1:1 Carrom Board square.
-     *
-     * @param boardPixels Array of packed ARGB/RGBA pixels of size [boardSide x boardSide]
-     * @param boardSide Dimension of the cropped 1:1 square
-     * @param boardBounds Coordinate mapping bounds on actual screen
+     * Reverse Ray-Casting Aim Brain (Pocket -> Puck -> Striker):
+     * 1. Iterates through the 4 pockets (Top-Left, Top-Right, Bottom-Left, Bottom-Right).
+     * 2. Filters out obstructed pockets (where another puck blocks the puck-to-pocket line).
+     * 3. Traces exit vector from target Puck (P) to Pocket (K): V_pocket = normalize(K - P).
+     * 4. Calculates exact Ghost-Point coordinate:
+     *    Gx = Px - (V_pocket_x * Puck_Diameter)
+     *    Gy = Py - (V_pocket_y * Puck_Diameter)
+     * 5. Solves intersection with bottom Striker Baseline (Y = baselineY) by projecting backward ray from G:
+     *    V_strike = normalize(P - G) = V_pocket
+     *    Backward ray from G: S_projected = G - (V_strike * t)
+     *    Intersection at baseline: t = (Gy - baselineY) / V_strike_y
+     *    Sx = Gx - V_strike_x * t = Gx - V_strike_x * ((Gy - baselineY) / V_strike_y)
+     * 6. Validates if Sx falls within board bounds [baselineStartX, baselineEndX].
+     * 7. Selects the most direct, lowest cut angle and highest pocket entry margin pocket candidate.
      */
-    fun scanBoardPixelsDirect(
-        boardPixels: IntArray,
-        boardSide: Int,
-        boardBounds: CarromBoardBounds
-    ): DetectedBoardVisionResult {
-        if (boardSide < 100 || boardPixels.size < boardSide * boardSide) {
-            return DetectedBoardVisionResult(isPlayerTurn = false, strikerPosition = null, targetPuckPosition = null)
-        }
+    data class ReversePocketSolution(
+        val pocketName: String,
+        val pocketPos: PointF,
+        val ghostPoint: PointF,
+        val exitVector: PointF,
+        val requiredBaselineStrikerX: Float,
+        val baselineStrikerPos: PointF,
+        val isReachableDirectly: Boolean,
+        val isPocketObstructed: Boolean,
+        val cutAngleDeg: Float,
+        val distanceToPocket: Float,
+        val confidenceScore: Int
+    )
 
-        val hsv = FloatArray(3)
+    fun solveReverseTrajectory(
+        targetPuck: PointF,
+        bounds: CarromBoardBounds,
+        config: AimEngineConfig = AimEngineConfig(),
+        otherPucks: List<PointF> = emptyList()
+    ): ReversePocketSolution? {
+        val puckRadius = if (config.coinRadius > 0f) config.coinRadius else bounds.boardSize * 0.032f
+        val puckDiameter = puckRadius * 2f
 
-        // ---------------------------------------------------------------------
-        // 1. DETERMINISTIC STRIKER BASELINE SCAN
-        // Corridor: Y: 72% to 82% of board height, X: 15% to 85% of board width
-        // ---------------------------------------------------------------------
-        val baselineStartY = (boardSide * 0.72f).toInt().coerceIn(0, boardSide - 1)
-        val baselineEndY = (boardSide * 0.82f).toInt().coerceIn(0, boardSide - 1)
-        val baselineStartX = (boardSide * 0.15f).toInt().coerceIn(0, boardSide - 1)
-        val baselineEndX = (boardSide * 0.85f).toInt().coerceIn(0, boardSide - 1)
-
-        val expectedStrikerRadiusPx = boardSide * 0.035f // ~32-38dp proportional to board
-        val minStrikerRadius = (expectedStrikerRadiusPx * 0.75f).coerceAtLeast(8f)
-        val maxStrikerRadius = (expectedStrikerRadiusPx * 1.35f).coerceAtLeast(14f)
-
-        var bestStrikerScore = 0f
-        var detectedStrikerGridX = -1f
-        var detectedStrikerGridY = -1f
-
-        // Sample along baseline corridor with 3px step for performance & sub-pixel precision
-        val step = max(2, (boardSide / 160))
-        for (y in baselineStartY..baselineEndY step step) {
-            for (x in baselineStartX..baselineEndX step step) {
-                val pixel = boardPixels[y * boardSide + x]
-                val r = (pixel shr 16) and 0xFF
-                val g = (pixel shr 8) and 0xFF
-                val b = pixel and 0xFF
-                Color.RGBToHSV(r, g, b, hsv)
-
-                // High-luminance rim or distinct striker core: V > 0.75 or strong saturation contrast
-                if (hsv[2] > 0.75f || (hsv[1] > 0.55f && hsv[2] > 0.60f)) {
-                    // Test radial symmetry around (x, y) for striker diameter
-                    val symmetryScore = evaluateRadialRing(
-                        boardPixels, boardSide, x, y,
-                        minStrikerRadius, maxStrikerRadius, hsv
-                    )
-                    if (symmetryScore > bestStrikerScore && symmetryScore >= 0.45f) {
-                        bestStrikerScore = symmetryScore
-                        detectedStrikerGridX = x.toFloat()
-                        detectedStrikerGridY = y.toFloat()
-                    }
-                }
-            }
-        }
-
-        // If no valid striker pattern is found in the baseline corridor, immediately set isPlayerTurn = false
-        if (bestStrikerScore < 0.45f || detectedStrikerGridX < 0f) {
-            return DetectedBoardVisionResult(
-                isPlayerTurn = false,
-                strikerPosition = null,
-                targetPuckPosition = null,
-                detectedPucks = emptyList(),
-                isVisionCalibrated = true
-            )
-        }
-
-        // Convert grid coordinate to screen coordinate
-        val scaleToScreen = boardBounds.boardSize / boardSide.toFloat()
-        val strikerScreenPos = PointF(
-            boardBounds.boardLeft + (detectedStrikerGridX * scaleToScreen),
-            boardBounds.boardTop + (detectedStrikerGridY * scaleToScreen)
+        val pocketList = listOf(
+            "Top-Left" to (bounds.pockets["Top-Left"] ?: PointF(bounds.boardLeft + NORMALIZED_POCKET_TOP_LEFT.x * bounds.boardSize, bounds.boardTop + NORMALIZED_POCKET_TOP_LEFT.y * bounds.boardSize)),
+            "Top-Right" to (bounds.pockets["Top-Right"] ?: PointF(bounds.boardLeft + NORMALIZED_POCKET_TOP_RIGHT.x * bounds.boardSize, bounds.boardTop + NORMALIZED_POCKET_TOP_RIGHT.y * bounds.boardSize)),
+            "Bottom-Left" to (bounds.pockets["Bottom-Left"] ?: PointF(bounds.boardLeft + NORMALIZED_POCKET_BOTTOM_LEFT.x * bounds.boardSize, bounds.boardTop + NORMALIZED_POCKET_BOTTOM_LEFT.y * bounds.boardSize)),
+            "Bottom-Right" to (bounds.pockets["Bottom-Right"] ?: PointF(bounds.boardLeft + NORMALIZED_POCKET_BOTTOM_RIGHT.x * bounds.boardSize, bounds.boardTop + NORMALIZED_POCKET_BOTTOM_RIGHT.y * bounds.boardSize))
         )
 
-        // ---------------------------------------------------------------------
-        // 2. PUCK CLUSTERING & CLASSIFICATION INSIDE PLAYING AREA
-        // ---------------------------------------------------------------------
-        val puckRadiusPx = boardSide * 0.026f // ~26-30dp
-        val playMinX = (boardSide * 0.08f).toInt()
-        val playMaxX = (boardSide * 0.92f).toInt()
-        val playMinY = (boardSide * 0.08f).toInt()
-        val playMaxY = (boardSide * 0.88f).toInt()
+        val solutions = mutableListOf<ReversePocketSolution>()
 
-        val puckCandidates = mutableListOf<PuckCandidate>()
-        val puckStep = max(3, (boardSide / 120))
+        for ((name, pocket) in pocketList) {
+            val dKx = pocket.x - targetPuck.x
+            val dKy = pocket.y - targetPuck.y
+            val distPuckToPocket = hypot(dKx, dKy)
+            if (distPuckToPocket < 0.001f) continue
 
-        for (y in playMinY..playMaxY step puckStep) {
-            for (x in playMinX..playMaxX step puckStep) {
-                // Do not register the striker as a target puck
-                val dToStriker = hypot(x - detectedStrikerGridX, y - detectedStrikerGridY)
-                if (dToStriker < expectedStrikerRadiusPx * 1.5f) continue
+            // Normalized Pocket Vector: V_pocket = normalize(K - P)
+            val vPocketX = dKx / distPuckToPocket
+            val vPocketY = dKy / distPuckToPocket
 
-                val pixel = boardPixels[y * boardSide + x]
-                val r = (pixel shr 16) and 0xFF
-                val g = (pixel shr 8) and 0xFF
-                val b = pixel and 0xFF
-                Color.RGBToHSV(r, g, b, hsv)
+            // Exact Ghost-Point coordinate: G = P - (V_pocket * Puck_Diameter)
+            val ghostX = targetPuck.x - (vPocketX * puckDiameter)
+            val ghostY = targetPuck.y - (vPocketY * puckDiameter)
+            val ghostPoint = PointF(ghostX, ghostY)
 
-                val hue = hsv[0]
-                val sat = hsv[1]
-                val value = hsv[2]
-
-                // Match classification:
-                // a) Queen: Hue within 350°-15° pure red band, Saturation > 0.70
-                // b) White Pucks: High Value V > 0.85, Low Saturation S < 0.15
-                // c) Black Pucks: Low Value V < 0.20
-                val puckType: PuckType? = when {
-                    (hue >= 345f || hue <= 15f) && sat > 0.65f && value > 0.40f -> PuckType.QUEEN
-                    value > 0.82f && sat < 0.22f -> PuckType.WHITE
-                    value < 0.22f -> PuckType.BLACK
-                    else -> null
-                }
-
-                if (puckType != null) {
-                    val clusterWeight = verifyPuckCluster(boardPixels, boardSide, x, y, puckRadiusPx, puckType)
-                    if (clusterWeight >= 0.45f) {
-                        // Avoid duplicates in the candidate list
-                        val existing = puckCandidates.firstOrNull {
-                            hypot(it.gridX - x, it.gridY - y) < puckRadiusPx * 1.2f
-                        }
-                        if (existing == null) {
-                            puckCandidates.add(PuckCandidate(x.toFloat(), y.toFloat(), puckType, clusterWeight))
-                        } else if (clusterWeight > existing.weight) {
-                            existing.gridX = (existing.gridX + x) / 2f
-                            existing.gridY = (existing.gridY + y) / 2f
-                            existing.weight = max(existing.weight, clusterWeight)
-                        }
-                    }
-                }
+            // Line-of-sight obstruction check from Puck to Pocket
+            val isObstructed = otherPucks.any { obst ->
+                if (obst == targetPuck) return@any false
+                val distFromObst = distancePointToSegment(obst, targetPuck, pocket)
+                distFromObst < (puckRadius * 1.85f)
             }
-        }
 
-        // ---------------------------------------------------------------------
-        // 2B. ACTIVE PUCK SHEEN / GLINT SCANNER (UNIVERSAL SKIN SUPPORT)
-        // High-luminance pulse peaks (Value V >= 0.92, Saturation S <= 0.12)
-        // occurring within circular puck radii (~28dp) inside board's inner active circle.
-        // Any puck displaying this luminance reflection is instantly classified as an Active Target Puck.
-        // ---------------------------------------------------------------------
-        val sheenPucks = scanInnerCircleSheenPeaksDirect(boardPixels, boardSide, boardBounds)
-        for (sp in sheenPucks) {
-            val sGridX = (sp.position.x - boardBounds.boardLeft) / scaleToScreen
-            val sGridY = (sp.position.y - boardBounds.boardTop) / scaleToScreen
-            val existing = puckCandidates.firstOrNull {
-                hypot(it.gridX - sGridX, it.gridY - sGridY) < puckRadiusPx * 1.3f
-            }
-            if (existing != null) {
-                existing.hasSheenGlint = true
-                existing.sheenLuminance = sp.sheenLuminance
-                existing.weight = 0.99f
-            } else {
-                puckCandidates.add(
-                    PuckCandidate(
-                        gridX = sGridX,
-                        gridY = sGridY,
-                        type = PuckType.ACTIVE_SHEEN,
-                        weight = 0.99f,
-                        hasSheenGlint = true,
-                        sheenLuminance = sp.sheenLuminance
-                    )
-                )
-            }
-        }
+            // Striker to Ghost-Point ray project onto baseline:
+            // S must strike towards G in the exact direction of (P - G) which is V_pocket
+            // Backward projection: S = G - V_pocket * t
+            // Baseline equation: Sy = baselineY => ghostY - vPocketY * t = bounds.baselineY
+            var solvedStrikerX = bounds.boardCenter.x
+            var isReachable = false
 
-        // Convert puck candidates to VisionPuck list
-        val detectedVisionPucks = puckCandidates.mapIndexed { index, cand ->
-            VisionPuck(
-                id = "${cand.type.name}_$index",
-                position = PointF(
-                    boardBounds.boardLeft + (cand.gridX * scaleToScreen),
-                    boardBounds.boardTop + (cand.gridY * scaleToScreen)
-                ),
-                type = cand.type.name,
-                radius = puckRadiusPx * scaleToScreen,
-                confidence = cand.weight,
-                hasSheenGlint = cand.hasSheenGlint,
-                sheenLuminance = cand.sheenLuminance
-            )
-        }
-
-        // ---------------------------------------------------------------------
-        // 3. AUTO-SELECT OPTIMAL TARGET PUCK
-        // Prioritizes Active Puck Sheen/Glint targets (+1000f score bonus)
-        // ---------------------------------------------------------------------
-        var optimalTargetPuck: PointF? = null
-        var selectedPocket: PointF? = null
-        var selectedPocketName: String? = null
-        var bestShotScore = -Float.MAX_VALUE
-
-        for (cand in puckCandidates) {
-            val puckScreenPos = PointF(
-                boardBounds.boardLeft + (cand.gridX * scaleToScreen),
-                boardBounds.boardTop + (cand.gridY * scaleToScreen)
-            )
-
-            // Evaluate against all 4 corner pockets
-            for ((pName, pPos) in boardBounds.pockets) {
-                val dToPocket = hypot(pPos.x - puckScreenPos.x, pPos.y - puckScreenPos.y)
-                val dToStriker = hypot(puckScreenPos.x - strikerScreenPos.x, puckScreenPos.y - strikerScreenPos.y)
-
-                // Check for straight line obstruction between puck and pocket
-                val pathClearance = calculatePathObstruction(
-                    start = puckScreenPos,
-                    end = pPos,
-                    allPucks = detectedVisionPucks,
-                    excludePuckPos = puckScreenPos,
-                    clearanceRadius = puckRadiusPx * scaleToScreen
-                )
-
-                // Cut angle score: angle between striker-to-puck and puck-to-pocket
-                val vSP = Vector2(puckScreenPos.x - strikerScreenPos.x, puckScreenPos.y - strikerScreenPos.y).normalized()
-                val vPK = Vector2(pPos.x - puckScreenPos.x, pPos.y - puckScreenPos.y).normalized()
-                val alignment = vSP.dot(vPK).coerceIn(-1f, 1f) // 1.0 = direct straight shot, < 0 = back cut
-
-                // High score for sheen active pucks (+1000f), clear path, straight alignment, closer distance
-                val sheenBonus = if (cand.hasSheenGlint || cand.type == PuckType.ACTIVE_SHEEN) 1000f else 0f
-                val queenBonus = if (cand.type == PuckType.QUEEN) 200f else 0f
-                val shotScore = sheenBonus + (pathClearance * 500f) + (alignment * 300f) - (dToPocket * 0.4f) - (dToStriker * 0.2f) + queenBonus
-
-                if (shotScore > bestShotScore) {
-                    bestShotScore = shotScore
-                    optimalTargetPuck = puckScreenPos
-                    selectedPocket = pPos
-                    selectedPocketName = pName
-                }
-            }
-        }
-
-        return DetectedBoardVisionResult(
-            isPlayerTurn = true,
-            strikerPosition = strikerScreenPos,
-            targetPuckPosition = optimalTargetPuck,
-            detectedPucks = detectedVisionPucks,
-            targetPocket = selectedPocket,
-            targetPocketName = selectedPocketName,
-            isVisionCalibrated = true
-        )
-    }
-
-    /**
-     * High-Luminance Active Puck Sheen/Glint Tracker (Universal Skin Support):
-     * - Carrom Pool overlays an animated diagonal white shine/glint across the active player's valid pucks.
-     * - Scans exclusively for high-luminance pulse peaks (Value V >= 0.92, Saturation S <= 0.12)
-     *   occurring within circular puck radii (~28dp) inside the board's inner active circle.
-     * - Any puck displaying this luminance reflection is instantly classified as an Active Target Puck,
-     *   ignoring custom skin textures or base colors (Blue, Black, Special Skins).
-     */
-    fun scanInnerCircleSheenPeaksDirect(
-        boardPixels: IntArray,
-        boardSide: Int,
-        boardBounds: CarromBoardBounds
-    ): List<VisionPuck> {
-        if (boardSide < 100 || boardPixels.size < boardSide * boardSide) {
-            return emptyList()
-        }
-
-        val centerX = boardSide / 2f
-        val centerY = boardSide / 2f
-        // Strictly across the board's inner active circle (radius = 40% of board side)
-        val innerCircleRadius = boardSide * 0.40f
-        val innerCircleRadiusSq = innerCircleRadius * innerCircleRadius
-
-        val puckRadiusPx = boardSide * 0.028f // ~28dp circular puck radius
-        val clusterMergeDistSq = (puckRadiusPx * 1.3f) * (puckRadiusPx * 1.3f)
-
-        val hsv = FloatArray(3)
-        val step = max(2, boardSide / 160) // Fast 2-3px sampling step
-
-        val peakCandidates = mutableListOf<SheenPeakCandidate>()
-
-        val minY = (centerY - innerCircleRadius).toInt().coerceIn(0, boardSide - 1)
-        val maxY = (centerY + innerCircleRadius).toInt().coerceIn(0, boardSide - 1)
-
-        for (y in minY..maxY step step) {
-            val dy = y - centerY
-            val dySq = dy * dy
-            val remainingRadiusSq = innerCircleRadiusSq - dySq
-            if (remainingRadiusSq <= 0) continue
-            val maxDx = sqrt(remainingRadiusSq.toDouble()).toFloat()
-            val minX = (centerX - maxDx).toInt().coerceIn(0, boardSide - 1)
-            val maxX = (centerX + maxDx).toInt().coerceIn(0, boardSide - 1)
-
-            for (x in minX..maxX step step) {
-                val pixel = boardPixels[y * boardSide + x]
-                val r = (pixel shr 16) and 0xFF
-                val g = (pixel shr 8) and 0xFF
-                val b = pixel and 0xFF
-
-                Color.RGBToHSV(r, g, b, hsv)
-                val sat = hsv[1]
-                val value = hsv[2]
-
-                // High-luminance pulse peaks: Value V >= 0.92, Saturation S <= 0.12
-                if (value >= 0.92f && sat <= 0.12f) {
-                    var merged = false
-                    for (cand in peakCandidates) {
-                        val cdx = x - cand.gridX
-                        val cdy = y - cand.gridY
-                        if (cdx * cdx + cdy * cdy <= clusterMergeDistSq) {
-                            cand.pixelCount++
-                            cand.sumX += x
-                            cand.sumY += y
-                            cand.gridX = cand.sumX / cand.pixelCount
-                            cand.gridY = cand.sumY / cand.pixelCount
-                            if (value > cand.peakValue) {
-                                cand.peakValue = value
-                                cand.minSat = min(cand.minSat, sat)
-                            }
-                            merged = true
-                            break
-                        }
-                    }
-
-                    if (!merged) {
-                        peakCandidates.add(
-                            SheenPeakCandidate(
-                                gridX = x.toFloat(),
-                                gridY = y.toFloat(),
-                                peakValue = value,
-                                minSat = sat,
-                                sumX = x.toFloat(),
-                                sumY = y.toFloat(),
-                                pixelCount = 1
-                            )
-                        )
-                    }
-                }
-            }
-        }
-
-        val scaleToScreen = boardBounds.boardSize / boardSide.toFloat()
-        return peakCandidates.mapIndexed { index, cand ->
-            val screenX = boardBounds.boardLeft + (cand.gridX * scaleToScreen)
-            val screenY = boardBounds.boardTop + (cand.gridY * scaleToScreen)
-            VisionPuck(
-                id = "ACTIVE_SHEEN_$index",
-                position = PointF(screenX, screenY),
-                type = PuckType.ACTIVE_SHEEN.name,
-                radius = puckRadiusPx * scaleToScreen,
-                confidence = 0.99f,
-                hasSheenGlint = true,
-                sheenLuminance = cand.peakValue
-            )
-        }
-    }
-
-    /**
-     * Ultra-Low CPU Footprint Sheen Tracker Engine:
-     * Runs the sheen peak detector asynchronously at 12 FPS strictly across
-     * the board's inner active circle to guarantee 0% device lag and zero frame throttling.
-     */
-    object SheenTrackerEngine {
-        private val trackerScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-        private var trackerJob: Job? = null
-
-        val activeSheenPucksFlow = MutableStateFlow<List<VisionPuck>>(emptyList())
-        var latestActivePucks: List<VisionPuck> = emptyList()
-            private set
-
-        private var latestFramePixels: IntArray? = null
-        private var latestBoardSide: Int = 0
-        private var latestBoardBounds: CarromBoardBounds? = null
-        private var isFrameDirty: Boolean = false
-        private val frameBufferLock = Any()
-
-        fun postFrameBuffer(pixels: IntArray, side: Int, bounds: CarromBoardBounds) {
-            synchronized(frameBufferLock) {
-                if (latestFramePixels == null || latestFramePixels?.size != pixels.size) {
-                    latestFramePixels = pixels.clone()
+            if (abs(vPocketY) > 0.05f) {
+                val t = (ghostY - bounds.baselineY) / vPocketY
+                // For a natural forward shot, striker is behind ghost ball (t > 0 if pocket is above baseline)
+                val projX = ghostX - (vPocketX * t)
+                if (projX in bounds.baselineStartX..bounds.baselineEndX && t > 0f) {
+                    solvedStrikerX = projX
+                    isReachable = true
                 } else {
-                    System.arraycopy(pixels, 0, latestFramePixels!!, 0, pixels.size)
+                    // Clamp to closest baseline position
+                    solvedStrikerX = projX.coerceIn(bounds.baselineStartX, bounds.baselineEndX)
                 }
-                latestBoardSide = side
-                latestBoardBounds = bounds
-                isFrameDirty = true
+            } else {
+                // If nearly horizontal, project to closest baseline X
+                solvedStrikerX = ghostX.coerceIn(bounds.baselineStartX, bounds.baselineEndX)
             }
+
+            val strikerPos = PointF(solvedStrikerX, bounds.baselineY)
+
+            // Calculate cut angle between striker-to-ghost vector and puck-to-pocket vector
+            val dSx = ghostX - strikerPos.x
+            val dSy = ghostY - strikerPos.y
+            val distStrikerGhost = hypot(dSx, dSy)
+            val vStrikeX = if (distStrikerGhost > 0.001f) dSx / distStrikerGhost else 0f
+            val vStrikeY = if (distStrikerGhost > 0.001f) dSy / distStrikerGhost else -1f
+
+            val dotProduct = (vStrikeX * vPocketX + vStrikeY * vPocketY).coerceIn(-1f, 1f)
+            val cutAngleDeg = Math.toDegrees(kotlin.math.acos(dotProduct.toDouble())).toFloat()
+
+            var confidence = 100 - (cutAngleDeg * 0.7f).toInt()
+            if (isObstructed) confidence -= 50
+            if (!isReachable) confidence -= 25
+            if (name.startsWith("Bottom")) confidence -= 10 // Top pockets are generally easier from bottom baseline
+
+            solutions.add(
+                ReversePocketSolution(
+                    pocketName = name,
+                    pocketPos = pocket,
+                    ghostPoint = ghostPoint,
+                    exitVector = PointF(vPocketX, vPocketY),
+                    requiredBaselineStrikerX = solvedStrikerX,
+                    baselineStrikerPos = strikerPos,
+                    isReachableDirectly = isReachable && !isObstructed,
+                    isPocketObstructed = isObstructed,
+                    cutAngleDeg = cutAngleDeg,
+                    distanceToPocket = distPuckToPocket,
+                    confidenceScore = confidence.coerceIn(5, 99)
+                )
+            )
         }
 
-        fun startAsync12FpsTracker(onDetectionUpdate: ((List<VisionPuck>) -> Unit)? = null) {
-            stopTracker()
-            trackerJob = trackerScope.launch {
-                while (isActive) {
-                    val loopStart = SystemClock.elapsedRealtime()
-
-                    var buffer: IntArray? = null
-                    var side = 0
-                    var bounds: CarromBoardBounds? = null
-
-                    synchronized(frameBufferLock) {
-                        if (isFrameDirty && latestFramePixels != null && latestBoardSide > 0 && latestBoardBounds != null) {
-                            buffer = latestFramePixels
-                            side = latestBoardSide
-                            bounds = latestBoardBounds
-                            isFrameDirty = false
-                        }
-                    }
-
-                    if (buffer != null && bounds != null) {
-                        val detected = scanInnerCircleSheenPeaksDirect(buffer!!, side, bounds!!)
-                        latestActivePucks = detected
-                        activeSheenPucksFlow.value = detected
-                        withContext(Dispatchers.Main) {
-                            onDetectionUpdate?.invoke(detected)
-                        }
-                    }
-
-                    // Strict 12 FPS interval (1000ms / 12 = ~83.3ms) for 0% lag and zero throttling
-                    val elapsed = SystemClock.elapsedRealtime() - loopStart
-                    val sleepMs = (83L - elapsed).coerceAtLeast(10L)
-                    delay(sleepMs)
-                }
-            }
-        }
-
-        fun stopTracker() {
-            trackerJob?.cancel()
-            trackerJob = null
-        }
+        // Return best candidate: reachable & unobstructed with highest confidence score
+        return solutions.filter { !it.isPocketObstructed }
+            .maxByOrNull { it.confidenceScore }
+            ?: solutions.maxByOrNull { it.confidenceScore }
     }
-
-    /**
-     * Checks radial ring symmetry to confirm a striker disc pattern.
-     */
-    private fun evaluateRadialRing(
-        pixels: IntArray,
-        side: Int,
-        cx: Int,
-        cy: Int,
-        minR: Float,
-        maxR: Float,
-        hsvTemp: FloatArray
-    ): Float {
-        var matchCount = 0
-        val testAngles = 12
-        val midR = (minR + maxR) / 2f
-
-        for (i in 0 until testAngles) {
-            val theta = (i * 2.0 * PI / testAngles)
-            val rx = (cx + midR * cos(theta)).toInt()
-            val ry = (cy + midR * sin(theta)).toInt()
-
-            if (rx in 0 until side && ry in 0 until side) {
-                val p = pixels[ry * side + rx]
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                Color.RGBToHSV(r, g, b, hsvTemp)
-                if (hsvTemp[2] > 0.65f || hsvTemp[1] > 0.50f) {
-                    matchCount++
-                }
-            }
-        }
-        return matchCount / testAngles.toFloat()
-    }
-
-    /**
-     * Verifies that a cluster around (cx, cy) is a consistent puck disc of given type.
-     */
-    private fun verifyPuckCluster(
-        pixels: IntArray,
-        side: Int,
-        cx: Int,
-        cy: Int,
-        radius: Float,
-        expectedType: PuckType
-    ): Float {
-        var matchingSamples = 0
-        var totalSamples = 0
-        val hsv = FloatArray(3)
-        val rInt = radius.toInt().coerceAtLeast(3)
-
-        for (dy in -rInt..rInt step 2) {
-            for (dx in -rInt..rInt step 2) {
-                if (dx * dx + dy * dy <= radius * radius) {
-                    val px = cx + dx
-                    val py = cy + dy
-                    if (px in 0 until side && py in 0 until side) {
-                        totalSamples++
-                        val p = pixels[py * side + px]
-                        val r = (p shr 16) and 0xFF
-                        val g = (p shr 8) and 0xFF
-                        val b = p and 0xFF
-                        Color.RGBToHSV(r, g, b, hsv)
-
-                        val matches = when (expectedType) {
-                            PuckType.QUEEN -> (hsv[0] >= 340f || hsv[0] <= 20f) && hsv[1] > 0.60f
-                            PuckType.WHITE -> hsv[2] > 0.78f && hsv[1] < 0.25f
-                            PuckType.BLACK -> hsv[2] < 0.25f
-                            else -> false
-                        }
-                        if (matches) matchingSamples++
-                    }
-                }
-            }
-        }
-
-        return if (totalSamples > 0) matchingSamples / totalSamples.toFloat() else 0f
-    }
-
-    /**
-     * Calculates path clearance from start to end (1.0 = clear, 0.0 = directly blocked).
-     */
-    private fun calculatePathObstruction(
-        start: PointF,
-        end: PointF,
-        allPucks: List<VisionPuck>,
-        excludePuckPos: PointF,
-        clearanceRadius: Float
-    ): Float {
-        val lineVec = Vector2(end.x - start.x, end.y - start.y)
-        val lineLen = lineVec.length()
-        if (lineLen < 0.0001f) return 1f
-
-        val lineNorm = lineVec.normalized()
-
-        for (puck in allPucks) {
-            val dExclude = hypot(puck.position.x - excludePuckPos.x, puck.position.y - excludePuckPos.y)
-            if (dExclude < clearanceRadius * 0.9f) continue
-
-            // Distance from point to line segment
-            val toPuck = Vector2(puck.position.x - start.x, puck.position.y - start.y)
-            val projection = toPuck.dot(lineNorm)
-
-            if (projection in (clearanceRadius * 0.5f)..(lineLen - clearanceRadius * 0.5f)) {
-                val perpDist = abs(toPuck.x * lineNorm.y - toPuck.y * lineNorm.x)
-                if (perpDist < clearanceRadius * 1.6f) {
-                    return 0.1f // Obstructed
-                }
-            }
-        }
-        return 1.0f // Clear path
-    }
-
-    /**
-     * Fallback for bitmap input (extracts direct pixels and delegates to scanBoardPixelsDirect).
-     */
-    fun detectBoardEntitiesFromViewport(
-        boardBitmap: Bitmap?,
-        boardBounds: CarromBoardBounds
-    ): DetectedBoardVisionResult {
-        if (boardBitmap == null || boardBitmap.isRecycled) {
-            return DetectedBoardVisionResult(isPlayerTurn = false, strikerPosition = null, targetPuckPosition = null)
-        }
-
-        try {
-            val bmpW = boardBitmap.width
-            val bmpH = boardBitmap.height
-            val side = min(bmpW, bmpH)
-            val startX = (bmpW - side) / 2
-            val startY = (bmpH - side) / 2
-
-            val pixels = IntArray(side * side)
-            boardBitmap.getPixels(pixels, 0, side, startX, startY, side, side)
-
-            return scanBoardPixelsDirect(pixels, side, boardBounds)
-        } catch (_: Exception) {
-            return DetectedBoardVisionResult(isPlayerTurn = false, strikerPosition = null, targetPuckPosition = null)
-        }
-    }
-
-    private data class PuckCandidate(
-        var gridX: Float,
-        var gridY: Float,
-        val type: PuckType,
-        var weight: Float,
-        var hasSheenGlint: Boolean = false,
-        var sheenLuminance: Float = 0f
-    )
-
-    private data class SheenPeakCandidate(
-        var gridX: Float,
-        var gridY: Float,
-        var peakValue: Float,
-        var minSat: Float,
-        var sumX: Float,
-        var sumY: Float,
-        var pixelCount: Int
-    )
 }
+
 
 /**
  * Cloud Physics Solution data class.

@@ -2,43 +2,32 @@ package com.example
 
 import android.content.Context
 import android.graphics.*
-import android.os.Handler
-import android.os.Looper
 import android.util.AttributeSet
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
+import android.widget.Toast
 import kotlin.math.*
 
 /**
- * Pure, deterministic 2D Ghost-Ball Aim Overlay View with Autonomous Slingshot Auto-Strike Injection.
+ * Instant Zero-Lag Interactive Carrom Aim Overlay View.
  *
- * Clean Dynamic Rendering:
- * - When idle (no touch or turn active), draws NOTHING on screen (zero clutter, 100% transparent).
- * - When an aim interaction occurs, draws two ultra-thin glowing laser lines:
- *     Line 1 (Striker Line): From S to G (Cyan Laser with small white impact circle at G).
- *     Line 2 (Puck Line): From P directly into pocket K (Yellow/Green Laser).
- * - Lines stop drawing immediately at pocket center K and never spill over screen edges.
+ * Performance Architecture:
+ * - 0% CPU consumption during idle: Zero background loops, zero pixel scanners, zero coroutine threads.
+ * - Hardware-accelerated Canvas rendering only triggered on direct user interaction.
  *
- * Autonomous Auto-Strike System:
- * 1. Autonomous Turn & Stability Trigger:
- *    - When AutoPlay switch is ON, monitors detected striker position (Xs, Ys).
- *    - Once striker position remains stable for >= 250ms (confirming board is completely static
- *      and it is player's turn), triggers the auto-strike sequence.
- * 2. Inverted Slingshot Math:
- *    - Read locked Ghost-Ball trajectory angle (Theta).
- *    - Slingshot pull angle is strictly inverted: PullAngle = Theta + 180 degrees.
- *    - Calculate pull distance based on target puck distance:
- *        Short pot (< 250px): Pull back 45-60px (Soft touch).
- *        Long bank/rebound (> 500px): Pull back 110-135px (Full power).
- *    - Compute Drag End Point:
- *        EndX = Xs + (pullDistance * cos(PullAngle))
- *        EndY = Ys + (pullDistance * sin(PullAngle))
- * 3. Humanized Gesture Dispatch:
- *    - Dispatches using Path() with a subtle quadratic Bezier curve over a duration of 120-160ms.
- *    - Releases touch cleanly at (EndX, EndY).
- * 4. Cooldown Lock:
- *    - Locks Auto-Strike for 2.5 seconds to allow pucks to finish rolling before looking for next turn.
+ * Interactive Touch Capabilities:
+ * - Striker Guide circle anchored on the bottom baseline: Touching & dragging slides the striker dynamically.
+ * - Multi-Color Trajectories rendered directly on screen in real time:
+ *     * Striker Vector (Line 1): Crisp White glowing solid ray connecting Striker (Xs, Ys) to Ghost-Point (G).
+ *     * White Ghost Puck Circle: Rendered at collision coordinate (G).
+ *     * Target Puck Trajectory (Line 2): Vivid Neon Yellow ray directing active puck into target corner pocket (K).
+ *     * Secondary / Kiss Shot (Line 3): Vivid Cyan ray directing secondary puck toward pocket if path obstructed.
+ *     * Stop/Resting Point Markers: Color-coded dots (White for striker, Yellow for target, Cyan for secondary).
+ *
+ * Instant Slingshot Dispatch:
+ * - When AUTO toggle is ON and player taps to shoot, immediately dispatches the AccessibilityService
+ *   gesture from the current striker position to execute the slingshot pull.
  */
 class AimOverlayView @JvmOverloads constructor(
     context: Context,
@@ -48,8 +37,10 @@ class AimOverlayView @JvmOverloads constructor(
 
     companion object {
         private const val TAG = "AimOverlayView"
-        private const val STABILITY_THRESHOLD_MS = 250L // Striker must be stable for >= 250ms
-        private const val STABILITY_TOLERANCE_PX = 4.0f // Position movement tolerance to count as static
+        private const val TOUCH_MODE_NONE = 0
+        private const val TOUCH_MODE_STRIKER = 1
+        private const val TOUCH_MODE_PUCK = 2
+        private const val TOUCH_MODE_BOARD = 3
     }
 
     var config: AimEngineConfig = AimEngineConfig()
@@ -66,10 +57,9 @@ class AimOverlayView @JvmOverloads constructor(
     private var boardBounds: CarromBoardBounds = AimEngine.calculateBoardBounds(1080f, 2400f)
     private var currentTrajectory: AimTrajectory? = null
 
-    // Idle & Interaction State Management
+    // Match & Overlay State
     var isMatchModeActive: Boolean = true
-    var isPlayerTurn: Boolean = false
-    var isAimActive: Boolean = false
+    var isAimActive: Boolean = true
         private set
 
     var isAutoPlayActive: Boolean = false
@@ -78,87 +68,144 @@ class AimOverlayView @JvmOverloads constructor(
     private var overridePocketPos: PointF? = null
     private var overridePocketName: String? = null
 
-    // Autonomous Turn & Stability Tracker
-    private var lastObservedStrikerX: Float = -1f
-    private var lastObservedStrikerY: Float = -1f
-    private var strikerStableStartTime: Long = 0L
-    private var hasFiredForCurrentTurn: Boolean = false
+    // Touch interaction tracking
+    private var activeTouchMode = TOUCH_MODE_NONE
+    private var touchDownX = 0f
+    private var touchDownY = 0f
+    private var touchDownTime = 0L
 
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private val idleTimeoutRunnable = Runnable {
-        isAimActive = false
-        invalidate() // Screen becomes completely blank/empty when idle
-    }
+    // Active vision detected pucks & secondary puck representation
+    var secondaryCoinPos: PointF? = null
+    private var detectedPucksList: List<PointF> = emptyList()
 
-    // Touch dragging: 0 = none, 1 = striker, 2 = puck, 3 = general aim
-    private var activeTouchMode = 0
+    // -------------------------------------------------------------------------
+    // PAINTS: Legendary Neon Trajectory Visualizer (Solid 4dp, ANTI_ALIAS)
+    // -------------------------------------------------------------------------
 
-    // Multi-Ray Trajectory & Resting Point Visualizer Paints:
-    // Line 1: Striker Vector (Crisp White glowing solid ray)
+    private val density get() = resources.displayMetrics.density
+    private val stroke4dp get() = (4f * density).coerceAtLeast(4f)
+    private val glow10dp get() = (10f * density).coerceAtLeast(10f)
+
+    // Line 1: Striker Aim Line (Solid bright White laser ray, Paint strokeWidth 4dp, ANTI_ALIAS)
     private val strikerLaserCorePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.WHITE // Crisp White
-        strokeWidth = 2.8f
+        color = Color.WHITE
+        strokeWidth = (4f * resources.displayMetrics.density).coerceAtLeast(4f)
     }
-
     private val strikerLaserGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#55FFFFFF") // Translucent Crisp White Glow
-        strokeWidth = 7.5f
+        color = Color.parseColor("#66FFFFFF")
+        strokeWidth = (10f * resources.displayMetrics.density).coerceAtLeast(10f)
     }
 
-    // Line 2: Target Puck Trajectory (Vivid Neon Yellow ray)
+    // Line 2: Pocket Trajectory (Vivid Neon Yellow ray from ghost puck straight into target pocket)
     private val puckLaserCorePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#FFEA00") // Vivid Neon Yellow
-        strokeWidth = 2.8f
+        color = Color.parseColor("#FFEA00")
+        strokeWidth = (4f * resources.displayMetrics.density).coerceAtLeast(4f)
     }
-
     private val puckLaserGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#55FFEA00") // Translucent Neon Yellow Glow
-        strokeWidth = 7.5f
+        color = Color.parseColor("#66FFEA00")
+        strokeWidth = (10f * resources.displayMetrics.density).coerceAtLeast(10f)
     }
 
-    // Line 3: Secondary / Kiss Shot (Cyan ray toward pocket)
+    // Line 3: Cushion/Kiss Vector (Vivid Neon Cyan deflection ray with distinct color-coded resting dots)
     private val kissLaserCorePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#00E5FF") // Vivid Cyan
-        strokeWidth = 2.8f
+        color = Color.parseColor("#00E5FF")
+        strokeWidth = (4f * resources.displayMetrics.density).coerceAtLeast(4f)
     }
-
     private val kissLaserGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
-        color = Color.parseColor("#5500E5FF") // Translucent Cyan Glow
-        strokeWidth = 7.5f
+        color = Color.parseColor("#6600E5FF")
+        strokeWidth = (10f * resources.displayMetrics.density).coerceAtLeast(10f)
     }
 
-    // Impact Ghost-Point (G) with white impact ring & core dot
-    private val ghostImpactCirclePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    // Ghost Puck: High-visibility glowing white ring at the impact point
+    private val ghostPuckBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = Color.WHITE
-        strokeWidth = 2.0f
+        strokeWidth = (3.5f * resources.displayMetrics.density).coerceAtLeast(3.5f)
     }
-
-    private val ghostImpactGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val ghostPuckGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = Color.parseColor("#55FFFFFF")
-        strokeWidth = 5.5f
+        color = Color.parseColor("#80FFFFFF")
+        strokeWidth = (9.0f * resources.displayMetrics.density).coerceAtLeast(9f)
     }
-
-    private val ghostImpactDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val ghostPuckFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.parseColor("#25FFFFFF")
+    }
+    private val ghostPuckDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.WHITE
     }
 
-    // Stop/Resting Point Markers (Distinct colored dots where kinetic energy drops to 0):
-    // Striker Stop Marker: Crisp White
+    // Baseline Guide Visuals
+    private val baselineLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#88FFFFFF")
+        strokeWidth = 2.5f
+    }
+    private val baselineGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#3300E5FF")
+        strokeWidth = 7.0f
+    }
+    private val baselineEndPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#AA00E5FF")
+        strokeWidth = 2.5f
+    }
+
+    // Interactive Striker Guide Circle
+    private val strikerGuideAuraPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#4400E5FF")
+        strokeWidth = 8.0f
+    }
+    private val strikerGuideBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#00E5FF")
+        strokeWidth = 3.2f
+    }
+    private val strikerGuideFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.parseColor("#2500E5FF")
+    }
+    private val strikerGuideDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+    }
+
+    // Target Puck Guide
+    private val puckGuideAuraPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#44FFEA00")
+        strokeWidth = 7.0f
+    }
+    private val puckGuideBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#FFEA00")
+        strokeWidth = 2.6f
+    }
+    private val puckGuideFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.parseColor("#25FFEA00")
+    }
+    private val puckGuideDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.parseColor("#FFEA00")
+    }
+
+    // Color-Coded Stop/Resting Point Markers
     private val strikerRestDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.WHITE
@@ -168,8 +215,6 @@ class AimOverlayView @JvmOverloads constructor(
         color = Color.parseColor("#66FFFFFF")
         strokeWidth = 2.5f
     }
-
-    // Target Puck Stop Marker: Vivid Neon Yellow
     private val puckRestDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.parseColor("#FFEA00")
@@ -179,8 +224,6 @@ class AimOverlayView @JvmOverloads constructor(
         color = Color.parseColor("#66FFEA00")
         strokeWidth = 2.5f
     }
-
-    // Secondary / Kiss Puck Stop Marker: Vivid Cyan
     private val kissRestDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.parseColor("#00E5FF")
@@ -191,12 +234,24 @@ class AimOverlayView @JvmOverloads constructor(
         strokeWidth = 2.5f
     }
 
-    // Active vision detected pucks & secondary puck representation
-    var secondaryCoinPos: PointF? = null
-    private var detectedPucksList: List<PointF> = emptyList()
+    // Interactive Text Labels
+    private val guideTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#E0E0E0")
+        textSize = 28f
+        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        setShadowLayer(4f, 0f, 0f, Color.BLACK)
+    }
+    private val autoTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#00E5FF")
+        textSize = 30f
+        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        setShadowLayer(6f, 0f, 0f, Color.parseColor("#00E5FF"))
+    }
 
     init {
+        setLayerType(LAYER_TYPE_HARDWARE, null)
         updatePaints()
+        recalculateTrajectory()
     }
 
     private fun updatePaints() {
@@ -207,10 +262,6 @@ class AimOverlayView @JvmOverloads constructor(
         puckLaserGlowPaint.strokeWidth = width * 2.8f
         kissLaserCorePaint.strokeWidth = width
         kissLaserGlowPaint.strokeWidth = width * 2.8f
-
-        strikerLaserCorePaint.color = Color.WHITE
-        puckLaserCorePaint.color = Color.parseColor("#FFEA00")
-        kissLaserCorePaint.color = Color.parseColor("#00E5FF")
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -245,123 +296,17 @@ class AimOverlayView @JvmOverloads constructor(
         )
     }
 
-    /**
-     * Called whenever new vision detection results arrive from the frame scanner:
-     * - Evaluates stability of striker position for autonomous auto-strike triggering.
-     * - Once stable for >= 250ms, executes the shot.
-     */
-    fun updateVisionDetection(
-        isTurn: Boolean,
-        striker: PointF?,
-        puck: PointF?,
-        pocket: PointF? = null,
-        pocketName: String? = null,
-        allPucks: List<PointF> = emptyList()
-    ) {
-        isPlayerTurn = isTurn
-        if (!isTurn || striker == null || puck == null) {
-            // Immediately hide overlay lines when not player turn or balls rolling
-            isAimActive = false
-            mainHandler.removeCallbacks(idleTimeoutRunnable)
-            strikerStableStartTime = 0L
-            hasFiredForCurrentTurn = false
-            invalidate()
-            return
-        }
-
-        detectedPucksList = allPucks
-
-        // Live player turn detected!
-        val newStrikerX = striker.x.coerceIn(boardBounds.cushionLeft, boardBounds.cushionRight)
-        val newStrikerY = striker.y.coerceIn(boardBounds.cushionTop, boardBounds.cushionBottom)
-        val newCoinX = puck.x.coerceIn(boardBounds.cushionLeft, boardBounds.cushionRight)
-        val newCoinY = puck.y.coerceIn(boardBounds.cushionTop, boardBounds.cushionBottom)
-
-        // 1. Autonomous Turn & Stability Tracking:
-        // Monitor detected striker position (Xs, Ys).
-        val now = System.currentTimeMillis()
-        val dX = abs(newStrikerX - lastObservedStrikerX)
-        val dY = abs(newStrikerY - lastObservedStrikerY)
-
-        if (dX <= STABILITY_TOLERANCE_PX && dY <= STABILITY_TOLERANCE_PX) {
-            // Striker is resting in the same position
-            if (strikerStableStartTime == 0L) {
-                strikerStableStartTime = now
-            }
-        } else {
-            // Striker moved (e.g. user repositioned baseline or board settling)
-            lastObservedStrikerX = newStrikerX
-            lastObservedStrikerY = newStrikerY
-            strikerStableStartTime = now
-            hasFiredForCurrentTurn = false
-        }
-
-        strikerPos.x = newStrikerX
-        strikerPos.y = newStrikerY
-        coinPos.x = newCoinX
-        coinPos.y = newCoinY
-
-        overridePocketPos = pocket
-        overridePocketName = pocketName
-
-        recalculateTrajectory()
-        activateAim(3000L)
-
-        // Check if AutoPlay switch is ON, striker stable for >= 250ms, and cooldown expired
-        if (isAutoPlayActive &&
-            !hasFiredForCurrentTurn &&
-            strikerStableStartTime > 0L &&
-            (now - strikerStableStartTime) >= STABILITY_THRESHOLD_MS &&
-            !AutoStrikeAccessibilityService.isShotCooldownActive()
-        ) {
-            hasFiredForCurrentTurn = true
-            Log.d(TAG, "Autonomous Auto-Strike stability triggered (Stable: ${now - strikerStableStartTime}ms) -> Dispatching shot!")
-            triggerAutoStrike()
-        }
-    }
-
-    private fun activateAim(durationMs: Long = 3000L) {
-        isAimActive = true
-        mainHandler.removeCallbacks(idleTimeoutRunnable)
-        mainHandler.postDelayed(idleTimeoutRunnable, durationMs)
-        invalidate()
-    }
-
     fun wakeRenderingEngine() {
-        activateAim(3500L)
+        isMatchModeActive = true
+        isAimActive = true
+        recalculateTrajectory()
+        invalidate()
     }
 
     fun setMatchMode(active: Boolean) {
         isMatchModeActive = active
-        if (!active) {
-            isAimActive = false
-            mainHandler.removeCallbacks(idleTimeoutRunnable)
-            invalidate()
-        } else {
-            activateAim(3000L)
-        }
-    }
-
-    fun setStrikerBaselineSliderRatio(ratio: Float) {
-        val clampedRatio = ratio.coerceIn(0f, 1f)
-        strikerPos.x = boardBounds.baselineStartX + clampedRatio * (boardBounds.baselineEndX - boardBounds.baselineStartX)
-        strikerPos.y = boardBounds.baselineY
-        recalculateTrajectory()
-        activateAim(3500L)
-    }
-
-    fun updateLiveStrikerPosition(x: Float, y: Float) {
-        strikerPos.x = x.coerceIn(boardBounds.cushionLeft, boardBounds.cushionRight)
-        strikerPos.y = y.coerceIn(boardBounds.cushionTop, boardBounds.cushionBottom)
-        recalculateTrajectory()
-        activateAim(2500L)
-    }
-
-    fun updateLiveCoinPosition(x: Float, y: Float) {
-        coinPos.x = x.coerceIn(boardBounds.cushionLeft, boardBounds.cushionRight)
-        coinPos.y = y.coerceIn(boardBounds.cushionTop, boardBounds.cushionBottom)
-        recalculateTrajectory()
-        activateAim(2500L)
+        isAimActive = active
+        invalidate()
     }
 
     fun setLaserThickness(thickness: Float) {
@@ -370,13 +315,42 @@ class AimOverlayView @JvmOverloads constructor(
 
     fun setLaserColor(color: Int) {
         config = config.copy(laserColor = color)
+        strikerGuideBorderPaint.color = color
+        strikerGuideAuraPaint.color = (color and 0x00FFFFFF) or 0x44000000
     }
 
     fun resetIdleFade(isMenuOpen: Boolean) {
         if (isMenuOpen || isMatchModeActive) {
-            activateAim(4000L)
+            isAimActive = true
+            invalidate()
         }
     }
+
+    fun setStrikerBaselineSliderRatio(ratio: Float) {
+        val clampedRatio = ratio.coerceIn(0f, 1f)
+        strikerPos.x = boardBounds.baselineStartX + clampedRatio * (boardBounds.baselineEndX - boardBounds.baselineStartX)
+        strikerPos.y = boardBounds.baselineY
+        recalculateTrajectory()
+        invalidate()
+    }
+
+    fun updateLiveStrikerPosition(x: Float, y: Float) {
+        strikerPos.x = x.coerceIn(boardBounds.baselineStartX, boardBounds.baselineEndX)
+        strikerPos.y = boardBounds.baselineY
+        recalculateTrajectory()
+        invalidate()
+    }
+
+    fun updateLiveCoinPosition(x: Float, y: Float) {
+        coinPos.x = x.coerceIn(boardBounds.cushionLeft + 30f, boardBounds.cushionRight - 30f)
+        coinPos.y = y.coerceIn(boardBounds.cushionTop + 30f, boardBounds.baselineY - 30f)
+        recalculateTrajectory()
+        invalidate()
+    }
+
+    // -------------------------------------------------------------------------
+    // DIRECT TOUCH-BASED INTERACTIVE CONTROL (ZERO LAG)
+    // -------------------------------------------------------------------------
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isMatchModeActive) return false
@@ -386,35 +360,54 @@ class AimOverlayView @JvmOverloads constructor(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                activateAim(4000L)
+                touchDownX = x
+                touchDownY = y
+                touchDownTime = System.currentTimeMillis()
+
                 val distToStriker = hypot(x - strikerPos.x, y - strikerPos.y)
-                val distToCoin = hypot(x - coinPos.x, y - coinPos.y)
+                val distToPuck = hypot(x - coinPos.x, y - coinPos.y)
+                val distToBaselineY = abs(y - boardBounds.baselineY)
+                val isNearBaselineX = x in (boardBounds.baselineStartX - 100f)..(boardBounds.baselineEndX + 100f)
 
                 activeTouchMode = when {
-                    distToStriker < 75f -> 1
-                    distToCoin < 75f -> 2
-                    else -> 3
+                    distToStriker < 130f || (distToBaselineY < 75f && isNearBaselineX) -> TOUCH_MODE_STRIKER
+                    distToPuck < 110f -> TOUCH_MODE_PUCK
+                    else -> TOUCH_MODE_NONE
                 }
 
-                if (activeTouchMode == 3) {
-                    coinPos.x = x.coerceIn(boardBounds.cushionLeft, boardBounds.cushionRight)
-                    coinPos.y = y.coerceIn(boardBounds.cushionTop, boardBounds.cushionBottom)
-                    recalculateTrajectory()
-                    invalidate()
+                // If touch is not on interactive handles, pass it cleanly to the game window
+                if (activeTouchMode == TOUCH_MODE_NONE) {
+                    return false
                 }
+
+                isAimActive = true
+                when (activeTouchMode) {
+                    TOUCH_MODE_STRIKER -> {
+                        strikerPos.x = x.coerceIn(boardBounds.baselineStartX, boardBounds.baselineEndX)
+                        strikerPos.y = boardBounds.baselineY
+                    }
+                    TOUCH_MODE_PUCK -> {
+                        coinPos.x = x.coerceIn(boardBounds.cushionLeft + 35f, boardBounds.cushionRight - 35f)
+                        coinPos.y = y.coerceIn(boardBounds.cushionTop + 35f, boardBounds.baselineY - 35f)
+                    }
+                }
+
+                recalculateTrajectory()
+                invalidate()
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
-                activateAim(4000L)
+                if (activeTouchMode == TOUCH_MODE_NONE) return false
+                isAimActive = true
                 when (activeTouchMode) {
-                    1 -> {
-                        strikerPos.x = x.coerceIn(boardBounds.cushionLeft, boardBounds.cushionRight)
-                        strikerPos.y = y.coerceIn(boardBounds.cushionTop, boardBounds.cushionBottom)
+                    TOUCH_MODE_STRIKER -> {
+                        strikerPos.x = x.coerceIn(boardBounds.baselineStartX, boardBounds.baselineEndX)
+                        strikerPos.y = boardBounds.baselineY
                     }
-                    2, 3 -> {
-                        coinPos.x = x.coerceIn(boardBounds.cushionLeft, boardBounds.cushionRight)
-                        coinPos.y = y.coerceIn(boardBounds.cushionTop, boardBounds.cushionBottom)
+                    TOUCH_MODE_PUCK -> {
+                        coinPos.x = x.coerceIn(boardBounds.cushionLeft + 35f, boardBounds.cushionRight - 35f)
+                        coinPos.y = y.coerceIn(boardBounds.cushionTop + 35f, boardBounds.baselineY - 35f)
                     }
                 }
                 recalculateTrajectory()
@@ -422,142 +415,197 @@ class AimOverlayView @JvmOverloads constructor(
                 return true
             }
 
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                activeTouchMode = 0
-                activateAim(2500L)
+            MotionEvent.ACTION_UP -> {
+                if (activeTouchMode == TOUCH_MODE_NONE) return false
+                val distMoved = hypot(x - touchDownX, y - touchDownY)
+                val duration = System.currentTimeMillis() - touchDownTime
+                val isTap = distMoved < 45f && duration < 600L
+
+                // Instant Slingshot Touch Dispatch:
+                // When AUTO toggle is ON and the player taps to shoot, dispatch the
+                // AccessibilityService gesture immediately from current striker position.
+                if (isAutoPlayActive && isTap && activeTouchMode == TOUCH_MODE_STRIKER) {
+                    Log.d(TAG, "Instant Slingshot Tap triggered -> Executing AutoStrike immediately!")
+                    triggerAutoStrike()
+                }
+
+                activeTouchMode = TOUCH_MODE_NONE
+                invalidate()
+                return true
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                activeTouchMode = TOUCH_MODE_NONE
+                invalidate()
                 return true
             }
         }
         return super.onTouchEvent(event)
     }
 
-    /**
-     * Multi-Color Trajectory & Resting Point Visualization:
-     * - Striker Vector (Line 1): Crisp White glowing solid ray connecting Striker (Xs, Ys) to impact Ghost-Point (G).
-     * - Target Puck Trajectory (Line 2): Vivid Neon Yellow ray directing from active puck into target corner pocket.
-     * - Secondary / Kiss Shot (Line 3): If another puck obstructs line, render Cyan ray toward pocket.
-     * - Stop/Resting Point Markers: Render distinct colored dots at the precise points where striker and pucks lose kinetic energy.
-     */
+    // -------------------------------------------------------------------------
+    // CANVAS RENDERING: Zero Lag Multi-Color Trajectories & Guides
+    // -------------------------------------------------------------------------
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // 1. Idle state: draw NOTHING
-        if (!isAimActive || !isMatchModeActive) {
+        if (!isMatchModeActive) {
             return
         }
+
+        if (currentTrajectory == null) {
+            recalculateTrajectory()
+        }
+
+        // 0. Bottom Baseline Guide Line
+        val baselineStartX = boardBounds.baselineStartX
+        val baselineEndX = boardBounds.baselineEndX
+        val baselineY = boardBounds.baselineY
+
+        canvas.drawLine(baselineStartX, baselineY, baselineEndX, baselineY, baselineGlowPaint)
+        canvas.drawLine(baselineStartX, baselineY, baselineEndX, baselineY, baselineLinePaint)
+        canvas.drawCircle(baselineStartX, baselineY, 12f, baselineEndPaint)
+        canvas.drawCircle(baselineEndX, baselineY, 12f, baselineEndPaint)
+
+        // 1. Active Glowing Striker Ring on bottom baseline
+        val strikerRadius = (boardBounds.boardSize * 0.038f).coerceIn(32f, 48f)
+        canvas.drawCircle(strikerPos.x, strikerPos.y, strikerRadius + 10f, strikerGuideAuraPaint)
+        canvas.drawCircle(strikerPos.x, strikerPos.y, strikerRadius, strikerGuideFillPaint)
+        canvas.drawCircle(strikerPos.x, strikerPos.y, strikerRadius, strikerGuideBorderPaint)
+        canvas.drawCircle(strikerPos.x, strikerPos.y, strikerRadius * 0.45f, strikerGuideBorderPaint)
+        canvas.drawCircle(strikerPos.x, strikerPos.y, 4.5f, strikerGuideDotPaint)
+
+        // Subtle Reticle Crosshairs inside Striker Ring
+        canvas.drawLine(strikerPos.x - strikerRadius * 0.55f, strikerPos.y, strikerPos.x + strikerRadius * 0.55f, strikerPos.y, strikerGuideBorderPaint)
+        canvas.drawLine(strikerPos.x, strikerPos.y - strikerRadius * 0.55f, strikerPos.x, strikerPos.y + strikerRadius * 0.55f, strikerGuideBorderPaint)
+
+        // Guide text below striker
+        if (isAutoPlayActive) {
+            val text = "⚡ TAP TO SHOOT"
+            val textWidth = autoTextPaint.measureText(text)
+            canvas.drawText(text, strikerPos.x - textWidth / 2f, strikerPos.y + strikerRadius + 30f, autoTextPaint)
+        } else {
+            val text = "◄ DRAG STRIKER ►"
+            val textWidth = guideTextPaint.measureText(text)
+            canvas.drawText(text, strikerPos.x - textWidth / 2f, strikerPos.y + strikerRadius + 28f, guideTextPaint)
+        }
+
+        // 1B. Target Puck Ghost-Circle by default
+        val puckRadius = (boardBounds.boardSize * 0.028f).coerceIn(24f, 36f)
+        canvas.drawCircle(coinPos.x, coinPos.y, puckRadius + 8f, puckGuideAuraPaint)
+        canvas.drawCircle(coinPos.x, coinPos.y, puckRadius, puckGuideFillPaint)
+        canvas.drawCircle(coinPos.x, coinPos.y, puckRadius, puckGuideBorderPaint)
+        canvas.drawCircle(coinPos.x, coinPos.y, 4.0f, puckGuideDotPaint)
 
         val traj = currentTrajectory ?: return
         val s = traj.strikerPos
         val g = traj.ghostStrikerPos
-        val p = traj.coinPos
-        val k = traj.targetPocket
 
-        // 2. Line 1 (Striker Vector): Crisp White glowing solid ray connecting Striker (Xs, Ys) to Ghost-Point (G)
+        // 2. Line 1: Striker to Ghost-Ball (Solid White Ray)
         canvas.drawLine(s.x, s.y, g.x, g.y, strikerLaserGlowPaint)
         canvas.drawLine(s.x, s.y, g.x, g.y, strikerLaserCorePaint)
 
-        // Small white impact circle at Ghost-Ball impact point G
-        val impactRadius = (config.coinRadius * 0.7f).coerceIn(12f, 18f)
-        canvas.drawCircle(g.x, g.y, impactRadius, ghostImpactGlowPaint)
-        canvas.drawCircle(g.x, g.y, impactRadius, ghostImpactCirclePaint)
-        canvas.drawCircle(g.x, g.y, 2.5f, ghostImpactDotPaint)
+        // White Ghost Puck Circle at collision coordinate G
+        canvas.drawCircle(g.x, g.y, puckRadius + 7f, ghostPuckGlowPaint)
+        canvas.drawCircle(g.x, g.y, puckRadius, ghostPuckFillPaint)
+        canvas.drawCircle(g.x, g.y, puckRadius, ghostPuckBorderPaint)
+        canvas.drawCircle(g.x, g.y, 3.5f, ghostPuckDotPaint)
 
-        // Subtle Striker Deceleration / Tangent Ray rollout towards resting point
-        traj.strikerRestPoint?.let { restPt ->
-            if (hypot(restPt.x - g.x, restPt.y - g.y) > 8f) {
-                canvas.drawLine(g.x, g.y, restPt.x, restPt.y, strikerLaserGlowPaint)
-                canvas.drawLine(g.x, g.y, restPt.x, restPt.y, strikerLaserCorePaint)
+        // 3. Line 2: Ghost-Ball into Pocket (Neon Yellow Ray)
+        val pLine = traj.coinToPocketLine
+        if (pLine.size >= 2) {
+            for (i in 0 until pLine.size - 1) {
+                canvas.drawLine(pLine[i].x, pLine[i].y, pLine[i + 1].x, pLine[i + 1].y, puckLaserGlowPaint)
+                canvas.drawLine(pLine[i].x, pLine[i].y, pLine[i + 1].x, pLine[i + 1].y, puckLaserCorePaint)
             }
         }
 
-        // 3. Line 2 (Target Puck Trajectory): Vivid Neon Yellow ray directing from active puck into target corner pocket
-        val pLine = traj.coinToPocketLine
-        if (pLine.size >= 2) {
-            canvas.drawLine(pLine[0].x, pLine[0].y, pLine[1].x, pLine[1].y, puckLaserGlowPaint)
-            canvas.drawLine(pLine[0].x, pLine[0].y, pLine[1].x, pLine[1].y, puckLaserCorePaint)
-        }
-
-        // 4. Line 3 (Secondary / Kiss Shot): Cyan ray directing secondary puck toward pocket
+        // 4. Line 3: Cushions / Secondary Rebounds (Vivid Cyan Ray)
+        // a) Secondary Kiss Shot lines toward pocket
         if (traj.isKissShotActive && traj.kissShotLines.size >= 2) {
             val kLine = traj.kissShotLines
-            canvas.drawLine(kLine[0].x, kLine[0].y, kLine[1].x, kLine[1].y, kissLaserGlowPaint)
-            canvas.drawLine(kLine[0].x, kLine[0].y, kLine[1].x, kLine[1].y, kissLaserCorePaint)
+            for (i in 0 until kLine.size - 1) {
+                canvas.drawLine(kLine[i].x, kLine[i].y, kLine[i + 1].x, kLine[i + 1].y, kissLaserGlowPaint)
+                canvas.drawLine(kLine[i].x, kLine[i].y, kLine[i + 1].x, kLine[i + 1].y, kissLaserCorePaint)
+            }
         }
 
-        // 5. Stop/Resting Point Markers: Distinct colored dots at the precise points where kinetic energy drops to 0
+        // b) Cushion Bank Rebound Lines
+        if (traj.bankShotLines.size >= 2) {
+            val bLine = traj.bankShotLines
+            for (i in 0 until bLine.size - 1) {
+                canvas.drawLine(bLine[i].x, bLine[i].y, bLine[i + 1].x, bLine[i + 1].y, kissLaserGlowPaint)
+                canvas.drawLine(bLine[i].x, bLine[i].y, bLine[i + 1].x, bLine[i + 1].y, kissLaserCorePaint)
+            }
+            // Cushion Bounce Impact Points
+            for (bouncePt in traj.cushionImpactPoints) {
+                canvas.drawCircle(bouncePt.x, bouncePt.y, 11f, kissRestHaloPaint)
+                canvas.drawCircle(bouncePt.x, bouncePt.y, 5.0f, kissRestDotPaint)
+            }
+        }
+
+        // c) Striker Rebound / Deflection Rollout
+        if (traj.strikerReboundLine.size >= 2) {
+            val rLine = traj.strikerReboundLine
+            for (i in 0 until rLine.size - 1) {
+                canvas.drawLine(rLine[i].x, rLine[i].y, rLine[i + 1].x, rLine[i + 1].y, kissLaserGlowPaint)
+                canvas.drawLine(rLine[i].x, rLine[i].y, rLine[i + 1].x, rLine[i + 1].y, kissLaserCorePaint)
+            }
+        }
+
+        // 5. Stopping Point Markers (Color-coded resting dots)
         // a) Striker Stop Marker: Crisp White dot
         traj.strikerRestPoint?.let { restPt ->
-            canvas.drawCircle(restPt.x, restPt.y, 9.5f, strikerRestHaloPaint)
+            canvas.drawCircle(restPt.x, restPt.y, 10f, strikerRestHaloPaint)
             canvas.drawCircle(restPt.x, restPt.y, 4.5f, strikerRestDotPaint)
         }
 
         // b) Target Puck Stop Marker: Vivid Neon Yellow dot
         traj.targetPuckRestPoint?.let { restPt ->
-            canvas.drawCircle(restPt.x, restPt.y, 10.5f, puckRestHaloPaint)
+            canvas.drawCircle(restPt.x, restPt.y, 11f, puckRestHaloPaint)
             canvas.drawCircle(restPt.x, restPt.y, 5.0f, puckRestDotPaint)
         }
 
-        // c) Secondary / Kiss Puck Stop Marker: Vivid Cyan dot
+        // c) Secondary Puck Stop Marker: Vivid Cyan dot
         if (traj.isKissShotActive) {
             traj.secondaryPuckRestPoint?.let { restPt ->
-                canvas.drawCircle(restPt.x, restPt.y, 10.5f, kissRestHaloPaint)
+                canvas.drawCircle(restPt.x, restPt.y, 11f, kissRestHaloPaint)
                 canvas.drawCircle(restPt.x, restPt.y, 5.0f, kissRestDotPaint)
             }
         }
     }
 
     /**
-     * Executes the calculated strike via Accessibility Service touch injection:
-     * 1. Inverted Slingshot Math:
-     *      Reads locked Ghost-Ball trajectory angle Theta.
-     *      Slingshot PullAngle = Theta + 180 degrees.
-     * 2. Humanized Gesture Dispatch:
-     *      Subtle quadratic Bezier curve over 120-160ms (or 80ms Fast Mode).
-     * 3. Cooldown Lock:
-     *      2.5 seconds lock ensures pucks finish rolling.
+     * Working One-Tap Slingshot Auto-Strike:
+     * - Identifies the active target ghost point.
+     * - Calculates reverse slingshot vector: angle = target_angle + 180 degrees, pull distance = 160px.
+     * - Uses AccessibilityService to dispatch an inverted swipe gesture:
+     *   Start at Striker (x, y) -> drag backward to (pull_x, pull_y) over 100ms -> release (ACTION_UP).
+     * - Smooth execution with zero delay and zero CPU throttling.
      */
     fun triggerAutoStrike(onComplete: ((Boolean) -> Unit)? = null) {
-        val traj = currentTrajectory
-        if (traj == null) {
-            onComplete?.invoke(false)
-            return
+        if (currentTrajectory == null) {
+            recalculateTrajectory()
         }
+        val traj = currentTrajectory
+        val s = traj?.strikerPos ?: strikerPos
+        val g = traj?.ghostStrikerPos ?: coinPos
 
         if (!AutoStrikeAccessibilityService.isAccessibilitySettingsOn(context)) {
+            Log.w(TAG, "Accessibility service not enabled in settings.")
+            Toast.makeText(context, "⚡ Please enable Auto Strike Accessibility Service", Toast.LENGTH_SHORT).show()
             onComplete?.invoke(false)
             return
         }
 
-        if (AutoStrikeAccessibilityService.isShotCooldownActive()) {
-            Log.d(TAG, "Auto-Strike in cooldown lock. Skipping trigger.")
-            onComplete?.invoke(false)
-            return
-        }
-
-        val s = traj.strikerPos
-        val g = traj.ghostStrikerPos
-        val p = traj.coinPos
-
-        val params = AimEngine.calculateSlingshotShotParameters(
+        // Direct inverted slingshot gesture: 160px pull, 100ms duration, zero throttling
+        AutoStrikeAccessibilityService.performReverseSlingshotStrike(
             strikerPos = s,
             ghostPoint = g,
-            targetPuckPos = p
-        )
-
-        val duration = if (isFastMode) 80L else 140L
-
-        AutoStrikeAccessibilityService.performSlingshotAutoStrike(
-            strikerPos = s,
-            shotAngleDeg = params.forwardThetaDeg,
-            targetPuckDist = params.targetPuckDistPx,
-            durationMs = duration,
-            isFastMode = isFastMode,
-            onComplete = { success ->
-                if (success) {
-                    activateAim(1500L)
-                }
-                onComplete?.invoke(success)
-            }
+            pullDistancePx = 160f,
+            durationMs = 100L,
+            onComplete = onComplete
         )
     }
 }

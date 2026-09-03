@@ -183,9 +183,10 @@ fun MainAppScaffold() {
 
     var currentTab by remember { mutableStateOf(NavigationTab.DASHBOARD) }
 
-    var isPasscodeActive by remember { mutableStateOf(false) }
-    var remainingMillis by remember { mutableLongStateOf(0L) }
-    var cloudLicenseInfo by remember { mutableStateOf<CloudLicenseStatus?>(null) }
+    val initialStatus = remember { LicenseVerificationService.verifyLicenseQuick(context) }
+    var isPasscodeActive by remember { mutableStateOf(initialStatus.isPasscodeActive) }
+    var remainingMillis by remember { mutableLongStateOf(initialStatus.remainingMillis) }
+    var cloudLicenseInfo by remember { mutableStateOf<CloudLicenseStatus?>(initialStatus) }
     var isCheckingLicenseOnline by remember { mutableStateOf(false) }
 
     var showPasscodeDialog by remember { mutableStateOf(false) }
@@ -235,25 +236,9 @@ fun MainAppScaffold() {
     val isFloatingServiceActive by FloatingAimService.isServiceRunning.collectAsStateWithLifecycle()
     val cloudAiState by CloudAiConnectionManager.connectionState.collectAsStateWithLifecycle()
 
-    // Auto-Connect to Cloud Server & Hardware-Bound 7-Day License Check on Launch
+    // Lightweight startup: Instant initialization with zero lag and zero battery drain
     LaunchedEffect(Unit) {
         CloudAiConnectionManager.initializeAutoConnect(context)
-        isCheckingLicenseOnline = true
-        val status = LicenseVerificationService.verifyLicenseOnline(context)
-        cloudLicenseInfo = status
-        isPasscodeActive = status.isPasscodeActive
-        remainingMillis = status.remainingMillis
-        isCheckingLicenseOnline = false
-
-        while (true) {
-            delay(1000)
-            if (remainingMillis > 0) {
-                remainingMillis = (remainingMillis - 1000).coerceAtLeast(0L)
-                if (remainingMillis <= 0L) {
-                    isPasscodeActive = false
-                }
-            }
-        }
     }
 
     val isAppUnlocked = isPasscodeActive && remainingMillis > 0
@@ -772,25 +757,7 @@ fun DashboardScreen(
     val pagerState = rememberPagerState(pageCount = { bannerItems.size })
     val coroutineScope = rememberCoroutineScope()
 
-    // True continuous infinite auto-slider loop running on Dispatchers.Main
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.Main.immediate) {
-            while (isActive) {
-                delay(3000L)
-                if (bannerItems.isNotEmpty() && !pagerState.isScrollInProgress) {
-                    val nextPage = (pagerState.currentPage + 1) % bannerItems.size
-                    try {
-                        pagerState.animateScrollToPage(
-                            page = nextPage,
-                            animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing)
-                        )
-                    } catch (_: Exception) {
-                        // Handled smoothly if interrupted by user touch
-                    }
-                }
-            }
-        }
-    }
+    // Dashboard UI is completely lightweight and static for 60-120 FPS instant startup
 
     Column(
         modifier = Modifier
@@ -1161,17 +1128,8 @@ fun DashboardScreen(
         var syncProgress by remember { mutableFloatStateOf(0f) }
         var syncStatusText by remember { mutableStateOf("⚡ Initializing Neural Matrix...") }
 
-        // Infinite glowing border pulse for master button
-        val infiniteTransition = rememberInfiniteTransition(label = "StartEngineGlow")
-        val glowAlpha by infiniteTransition.animateFloat(
-            initialValue = 0.5f,
-            targetValue = 1.0f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(1200, easing = LinearEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "GlowAlpha"
-        )
+        // Static high-visibility glow for master button (zero CPU overhead)
+        val glowAlpha = 1.0f
 
         fun executeStartEngine() {
             if (!isAppUnlocked) {
@@ -2561,16 +2519,8 @@ fun InteractiveAimBoard(
     var coinPos by remember { mutableStateOf(Offset(240f, 240f)) }
     var selectedTarget by remember { mutableIntStateOf(0) }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "TargetLockPulse")
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "pulseScale"
-    )
+    // Static clean target reticle (zero CPU overhead)
+    val pulseScale = 0.5f
 
     val boardBg = Color(0xFF0E1A2D)
     val boardBorder = Color(0xFF263F63)

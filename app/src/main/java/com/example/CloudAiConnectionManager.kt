@@ -109,14 +109,10 @@ object CloudAiConnectionManager {
                     physicsMatrix = initialMatrix,
                     activePacketsSent = 1L
                 )
-                Log.i(TAG, "Cloud AI WebSocket / HTTPS Handshake completed successfully.")
-
-                // Start continuous live latency polling and matrix adaptation loop
-                startLiveSyncLoop()
+                Log.i(TAG, "Cloud AI Matrix ready with zero background polling.")
             } catch (e: Exception) {
                 Log.w(TAG, "Handshake fallback to offline local neural engine: ${e.message}")
                 setOfflineFallbackState()
-                startLiveSyncLoop()
             }
         }
     }
@@ -126,71 +122,14 @@ object CloudAiConnectionManager {
             isConnected = false,
             isOfflineFallback = true,
             latencyMs = 0,
-            statusText = "Local Vector Engine Active (Offline)",
-            livePingBadge = "⚡ Local Precision Engine (Offline)",
+            statusText = "Local Vector Engine Active",
+            livePingBadge = "⚡ Local Precision Engine",
             physicsMatrix = CloudPhysicsMatrix()
         )
     }
 
     private fun startLiveSyncLoop() {
-        pingJob?.cancel()
-        pingJob = managerScope.launch {
-            var packetCount = 1L
-            while (isActive) {
-                delay(Random.nextLong(3000L, 4500L)) // Refresh telemetry every 3-4.5s
-                val start = SystemClock.elapsedRealtime()
-                var currentPing = 24
-                var isLiveSuccess = false
-
-                try {
-                    val req = Request.Builder()
-                        .url("https://generativelanguage.googleapis.com/")
-                        .head()
-                        .build()
-                    val res = httpClient.newCall(req).execute()
-                    val duration = (SystemClock.elapsedRealtime() - start).toInt()
-                    currentPing = duration.coerceIn(18, 65)
-                    isLiveSuccess = true
-                    res.close()
-                } catch (_: Exception) {
-                    // In case of transient network drop, check if we fallback gracefully
-                    isLiveSuccess = false
-                }
-
-                packetCount++
-
-                if (isLiveSuccess) {
-                    // Update matrix with micro-calibrated physics offsets
-                    val updatedMatrix = _connectionState.value.physicsMatrix.copy(
-                        frictionCoefficient = 0.983f + (Random.nextFloat() * 0.003f),
-                        cushionRestitution = 0.932f + (Random.nextFloat() * 0.006f),
-                        lastSyncTimestamp = System.currentTimeMillis()
-                    )
-
-                    _connectionState.value = _connectionState.value.copy(
-                        isConnected = true,
-                        isOfflineFallback = false,
-                        latencyMs = currentPing,
-                        statusText = "${currentPing}ms • Cloud AI Matrix Synced",
-                        livePingBadge = "🟢 AI Cloud: ${currentPing}ms Active",
-                        physicsMatrix = updatedMatrix,
-                        activePacketsSent = packetCount,
-                        lastPingTimestamp = System.currentTimeMillis()
-                    )
-                } else {
-                    // Offline fallback: keep local engine fully active
-                    _connectionState.value = _connectionState.value.copy(
-                        isConnected = false,
-                        isOfflineFallback = true,
-                        latencyMs = 0,
-                        statusText = "Local Vector Engine (0ms)",
-                        livePingBadge = "⚡ Local Precision Engine (Offline)",
-                        activePacketsSent = packetCount,
-                        lastPingTimestamp = System.currentTimeMillis()
-                    )
-                }
-            }
-        }
+        // Disabled: Zero continuous polling to protect 60-120 FPS frame rate and battery life
     }
 }
 

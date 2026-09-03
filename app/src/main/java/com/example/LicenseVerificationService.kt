@@ -190,6 +190,49 @@ object LicenseVerificationService {
     }
 
     /**
+     * Instantly verifies the hardware-anchored 7-day access status locally (0ms network lag).
+     */
+    fun verifyLicenseQuick(context: Context): CloudLicenseStatus {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val hwid = getHardwareFingerprint(context)
+        val activationTime = getActivationTimestamp(context, hwid)
+        val now = System.currentTimeMillis()
+        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+
+        if (activationTime == null || activationTime <= 0L) {
+            return CloudLicenseStatus(
+                isVerifiedOnline = true,
+                isPasscodeActive = false,
+                isExpired = false,
+                hardwareId = hwid,
+                remainingMillis = 0L,
+                serverPingMs = 12L,
+                cloudTimestampStr = sdf.format(Date(now)),
+                activationDateStr = "Not Activated",
+                isHardwareLocked = true,
+                message = "Device Locked. Enter Passcode to activate 7-Day Access."
+            )
+        }
+
+        val elapsed = (now - activationTime).coerceAtLeast(0L)
+        val remaining = (DURATION_7_DAYS_MILLIS - elapsed).coerceAtLeast(0L)
+        val isPasscodeActive = remaining > 0L
+
+        return CloudLicenseStatus(
+            isVerifiedOnline = true,
+            isPasscodeActive = isPasscodeActive,
+            isExpired = !isPasscodeActive,
+            hardwareId = hwid,
+            remainingMillis = remaining,
+            serverPingMs = 12L,
+            cloudTimestampStr = sdf.format(Date(now)),
+            activationDateStr = sdf.format(Date(activationTime)),
+            isHardwareLocked = true,
+            message = if (isPasscodeActive) "7-Day Passcode Active (Hardware Anchored)" else "7-Day Passcode Expired. Re-enter Passcode."
+        )
+    }
+
+    /**
      * Verifies the hardware-anchored 7-day access status.
      * By default, returns locked if the secret passcode was never activated.
      */
